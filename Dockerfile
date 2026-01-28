@@ -25,16 +25,11 @@ ARG MOLTBOT_GIT_REF=main
 RUN git clone --depth 1 --branch "${MOLTBOT_GIT_REF}" https://github.com/moltbot/moltbot.git .
 
 # Patch: relax version requirements for packages that may reference unpublished versions.
-# Scope this narrowly to avoid surprising dependency mutations.
+# Apply to all extension package.json files to handle workspace protocol (workspace:*).
 RUN set -eux; \
-  for f in \
-    ./extensions/memory-core/package.json \
-    ./extensions/googlechat/package.json \
-  ; do \
-    if [ -f "$f" ]; then \
-      sed -i -E 's/"moltbot"[[:space:]]*:[[:space:]]*">=[^"]+"/"moltbot": "*"/g' "$f"; \
-      sed -i -E 's/"moltbot"[[:space:]]*:[[:space:]]*">=[^"]+"/"moltbot": "*"/g' "$f"; \
-    fi; \
+  find ./extensions -name 'package.json' -type f | while read -r f; do \
+    sed -i -E 's/"moltbot"[[:space:]]*:[[:space:]]*">=[^"]+"/"moltbot": "*"/g' "$f"; \
+    sed -i -E 's/"moltbot"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/"moltbot": "*"/g' "$f"; \
   done
 
 RUN pnpm install --no-frozen-lockfile
