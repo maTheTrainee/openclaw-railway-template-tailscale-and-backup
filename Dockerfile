@@ -31,8 +31,12 @@ RUN git fetch --tags && \
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
-# Verify build succeeded
-RUN test -f packages/cli/bin/openclaw.js || (echo "ERROR: OpenClaw CLI not built" && exit 1)
+# Verify build succeeded - check for CLI entry point
+RUN test -f openclaw.mjs || (echo "ERROR: OpenClaw CLI entry openclaw.mjs missing" && exit 1)
+
+# Verify CLI works
+RUN node openclaw.mjs --help >/dev/null || (echo "ERROR: OpenClaw CLI not functional" && exit 1)
+RUN echo "✓ OpenClaw CLI built and functional"
 
 # ============================================================
 # STAGE 2: Runtime image
@@ -59,12 +63,16 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 # Copy OpenClaw from builder stage
 COPY --from=builder /build /opt/openclaw
 
-# Add OpenClaw CLI to PATH
-ENV PATH="/opt/openclaw/packages/cli/bin:${PATH}"
-ENV OPENCLAW_ENTRY="/opt/openclaw/packages/cli/bin/openclaw.js"
+# Create wrapper script to make 'openclaw' command available
+RUN echo '#!/usr/bin/env bash\nexec node /opt/openclaw/openclaw.mjs "$@"' > /usr/local/bin/openclaw && \
+    chmod +x /usr/local/bin/openclaw
+
+# Set environment variable for wrapper compatibility
+ENV OPENCLAW_ENTRY="/opt/openclaw/openclaw.mjs"
 
 # Verify OpenClaw CLI works
 RUN openclaw --version || (echo "ERROR: OpenClaw CLI not accessible" && exit 1)
+RUN echo "✓ OpenClaw CLI accessible via wrapper"
 
 # CRITICAL: Verify Telegram channel is available
 RUN echo "Verifying Telegram channel support..." && \
