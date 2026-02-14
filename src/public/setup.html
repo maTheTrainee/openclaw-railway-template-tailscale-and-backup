@@ -35,6 +35,8 @@
       model: '',
       log: '',
       loading: false,
+      exportingBackup: false, // Added backup   
+      importingBackup: false, // Added backup
       pairingChannel: '',
       pairingCode: '',
       showPairingModal: false,
@@ -218,7 +220,75 @@
         } finally {
           this.loading = false;
         }
+      },
+      // ========== BACKUP FUNCTIONS ==========
+      async exportBackup() {
+        this.exportingBackup = true;
+        try {
+          const response = await fetch('/setup/export', {
+            credentials: 'same-origin'
+          });
+          if (!response.ok) throw new Error('Export failed');
+          
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `openclaw-backup-${new Date().toISOString().slice(0, 10)}.tar.gz`;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          
+          this.log = '✓ Backup downloaded successfully!\n';
+        } catch (error) {
+          this.log = 'Export failed: ' + error.message + '\n';
+        } finally {
+          this.exportingBackup = false;
+        }
+      },
+      
+      async importBackup() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.tar.gz,.tgz';
+        
+        input.onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          
+          this.importingBackup = true;
+          this.log = 'Importing backup...\n';
+          
+          try {
+            const formData = new FormData();
+            formData.append('backup', file);
+            
+            const response = await fetch('/setup/import', {
+              method: 'POST',
+              credentials: 'same-origin',
+              body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (!result.ok) {
+              throw new Error(result.error || 'Import failed');
+            }
+            
+            this.log += '✓ Backup imported successfully!\n';
+            this.log += 'Reloading page...\n';
+            setTimeout(() => window.location.reload(), 1500);
+            
+          } catch (error) {
+            this.log = 'Import failed: ' + error.message + '\n';
+            this.importingBackup = false;
+          }
+        };
+        
+        input.click();
       }
+      // ========== END BACKUP FUNCTIONS ==========
     }));
   });
   </script>
@@ -303,6 +373,35 @@
               Reset Setup
             </button>
           </div>
+
+<!-- ========== BACKUP CARDS ========== -->
+          <div class="flex flex-col bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-4 border border-emerald-200 dark:border-emerald-800">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-emerald-500/20 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              </div>
+              <span class="font-medium text-emerald-700 dark:text-emerald-300">Export Backup</span>
+            </div>
+            <p class="text-sm text-emerald-600/80 dark:text-emerald-400/70 flex-1">Download a backup of your OpenClaw configuration and workspace.</p>
+            <button @click="exportBackup()" :disabled="exportingBackup" class="w-full mt-4 bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-700 dark:text-emerald-300 px-4 py-2.5 rounded-lg font-medium border border-emerald-300 dark:border-emerald-700 transition-colors">
+              <span x-text="exportingBackup ? 'Downloading...' : 'Export Backup'"></span>
+            </button>
+          </div>
+
+          <div class="flex flex-col bg-purple-50 dark:bg-purple-900/20 rounded-xl p-4 border border-purple-200 dark:border-purple-800">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+              </div>
+              <span class="font-medium text-purple-700 dark:text-purple-300">Import Backup</span>
+            </div>
+            <p class="text-sm text-purple-600/80 dark:text-purple-400/70 flex-1">Restore OpenClaw from a previous backup file (.tar.gz).</p>
+            <button @click="importBackup()" :disabled="importingBackup" class="w-full mt-4 bg-purple-100 dark:bg-purple-900/40 hover:bg-purple-200 dark:hover:bg-purple-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-purple-700 dark:text-purple-300 px-4 py-2.5 rounded-lg font-medium border border-purple-300 dark:border-purple-700 transition-colors">
+              <span x-text="importingBackup ? 'Importing...' : 'Choose Backup File'"></span>
+            </button>
+          </div>
+          
+          <!-- ========== END BACKUP CARDS ========== -->
         </div>
 
         <div x-show="log" class="bg-neutral-100 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg p-4 font-mono text-xs text-neutral-600 dark:text-neutral-400 whitespace-pre-wrap max-h-64 overflow-y-auto" x-text="log"></div>
