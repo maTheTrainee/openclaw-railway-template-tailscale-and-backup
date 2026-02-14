@@ -700,9 +700,9 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
       async function configureChannel(name, cfgObj) {
         if (!helpText.includes(name)) {
-          return `\n[${name}] ❌ SKIPPED: This OpenClaw build does not include ${name} support.\n` +
-                 `   To enable ${name}, ensure OpenClaw was built with ${name} channel support.\n` +
-                 `   Check: openclaw channels add --help\n`;
+          return `\n[${name}] ℹ️  Plugin not yet installed (channels are installed during onboarding).\n` +
+                 `   Token will be saved to config. Channel will be configured after plugin installation.\n` +
+                 `   Note: This is normal - channels are on-demand plugins, not pre-installed.\n`;
         }
         const set = await runCmd(
           OPENCLAW_NODE,

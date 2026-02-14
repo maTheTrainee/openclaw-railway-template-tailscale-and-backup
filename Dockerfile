@@ -1,45 +1,11 @@
 # ============================================================
-# STAGE 1: Build OpenClaw from source
+# OpenClaw Railway Template with Tailscale
+# Uses official OpenClaw Docker image + layers Tailscale on top
 # ============================================================
-FROM node:24-bookworm AS builder
-
-# Install build dependencies
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      git \
-      build-essential \
-      python3 \
-      ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Enable corepack for pnpm
-RUN corepack enable
-
-WORKDIR /build
-
-# Clone OpenClaw repository
-RUN git clone https://github.com/openclaw/openclaw.git .
-
-# Checkout latest stable release tag (or use specific version)
-# For production, pin to a specific version tag
-RUN git fetch --tags && \
-    LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "main") && \
-    echo "Building OpenClaw from: $LATEST_TAG" && \
-    git checkout $LATEST_TAG
-
-# Install dependencies and build
-RUN pnpm install --frozen-lockfile
-RUN pnpm build
-
-# Verify build succeeded - check for CLI entry point
-RUN test -f openclaw.mjs || (echo "ERROR: OpenClaw CLI entry openclaw.mjs missing" && exit 1)
-
-# Verify CLI works
-RUN node openclaw.mjs --help >/dev/null || (echo "ERROR: OpenClaw CLI not functional" && exit 1)
-RUN echo "✓ OpenClaw CLI built and functional"
+FROM ghcr.io/openclaw/openclaw:2026.2.9 AS openclaw
 
 # ============================================================
-# STAGE 2: Runtime image
+# Runtime image with Tailscale + OpenClaw
 # ============================================================
 FROM node:24-bookworm
 
@@ -60,8 +26,8 @@ RUN apt-get update && \
 # Install Tailscale
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 
-# Copy OpenClaw from builder stage
-COPY --from=builder /build /opt/openclaw
+# Copy OpenClaw from official image
+COPY --from=openclaw /opt/openclaw /opt/openclaw
 
 # Create wrapper script to make 'openclaw' command available
 RUN echo '#!/usr/bin/env bash\nexec node /opt/openclaw/openclaw.mjs "$@"' > /usr/local/bin/openclaw && \
@@ -70,20 +36,13 @@ RUN echo '#!/usr/bin/env bash\nexec node /opt/openclaw/openclaw.mjs "$@"' > /usr
 # Set environment variable for wrapper compatibility
 ENV OPENCLAW_ENTRY="/opt/openclaw/openclaw.mjs"
 
-# Verify OpenClaw CLI works
+# Verify OpenClaw CLI works (basic sanity check only - channels are plugins)
 RUN openclaw --version || (echo "ERROR: OpenClaw CLI not accessible" && exit 1)
-RUN echo "✓ OpenClaw CLI accessible via wrapper"
+RUN echo "✓ OpenClaw CLI accessible"
 
-# CRITICAL: Verify Telegram channel is available
-RUN echo "Verifying Telegram channel support..." && \
-    openclaw channels add --help | grep -i telegram || \
-    (echo "ERROR: Telegram channel missing from build. OpenClaw was not built with Telegram support." && exit 1)
-
-RUN echo "✓ Telegram channel verified in build"
-
-# Verify Discord and Slack channels too
-RUN openclaw channels add --help | grep -i discord || echo "WARNING: Discord channel missing"
-RUN openclaw channels add --help | grep -i slack || echo "WARNING: Slack channel missing"
+# NOTE: We do NOT check for Telegram/Discord/Slack at build-time
+# because channels are plugin-based and installed during onboarding wizard.
+# Channel availability is verified at runtime (see entrypoint.sh).
 
 # Setup wrapper application
 WORKDIR /app

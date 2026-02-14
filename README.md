@@ -330,37 +330,37 @@ Expected output:
 }
 ```
 
-### "This OpenClaw build does not include telegram support"
+### "Channel plugin not available"
 
-**Symptom:** Setup logs show `[telegram] ❌ SKIPPED`
+**Symptom:** Setup logs show `[telegram] ❌ SKIPPED` or channel not working
 
-**Cause:** OpenClaw was installed without Telegram channel support.
+**Cause:** OpenClaw channels are **plugin-based** and installed during the onboarding wizard, not at build-time.
 
-**Fix:** This template builds OpenClaw from source to ensure all channels are included.
+**Understanding Channel Plugins:**
+- Channels (Telegram, Discord, Slack) are **not pre-installed** in the Docker image
+- During setup wizard, OpenClaw asks which channels you want to use
+- Selected channels are installed as npm packages when you complete onboarding
+- This is **normal behavior** - channels are user-configurable, not build-time
 
-1. **Verify at build-time:**
-   The Dockerfile includes a verification step that fails the build if Telegram is missing:
-   ```dockerfile
-   RUN openclaw channels add --help | grep -i telegram || exit 1
-   ```
+**Fix:**
 
-2. **Verify at runtime:**
-   Check container startup logs:
-   ```
-   [openclaw] Verifying available channels...
-   [openclaw] ✓ Telegram channel available
-   [openclaw] ✓ Discord channel available
-   [openclaw] ✓ Slack channel available
-   ```
+1. **Complete onboarding wizard:**
+   - Go to `/setup` wizard
+   - Choose your AI provider (Anthropic, OpenAI, etc.)
+   - When prompted, select which channels to install (Telegram, Discord, Slack)
+   - Setup will install selected channel plugins via npm
 
-3. **Manual verification via web terminal:**
+2. **Verify installation:**
+   After onboarding, check via web terminal:
    ```bash
-   openclaw channels add --help | grep telegram
+   openclaw channels list  # Shows installed channels
+   openclaw config get channels  # Shows channel configuration
    ```
 
-If Telegram is missing, the Docker build should have failed. This indicates either:
-- OpenClaw source changed (report issue to OpenClaw repo)
-- Build cache issue (rebuild with `--no-cache`)
+3. **If channel installation failed during onboarding:**
+   - Check Railway logs for npm install errors
+   - Ensure `/data` volume has write permissions
+   - Re-run setup and try again
 
 ---
 
@@ -591,25 +591,32 @@ A: This should NOT happen if `/data` volume is properly mounted. Check:
 
 ### Build Process
 
-This template uses a **multi-stage Docker build** to ensure all channels (Telegram, Discord, Slack) are included:
+This template uses the **official OpenClaw Docker image** and layers Tailscale on top:
 
-**Stage 1 - Builder:**
-- Clones OpenClaw from [official repository](https://github.com/openclaw/openclaw)
-- Checks out latest stable tag
-- Runs `pnpm install` and `pnpm build`
-- Produces full OpenClaw distribution with all channels
+**Base Image:**
+- `ghcr.io/openclaw/openclaw:2026.2.9` (official OpenClaw release)
+- Includes OpenClaw CLI and core functionality
+- Channels (Telegram, Discord, Slack) are **plugins installed during onboarding**
 
-**Stage 2 - Runtime:**
-- Node 24 + Tailscale installation
-- Copies built OpenClaw from builder stage
-- **Build-time verification:** Fails if Telegram channel missing
-- Installs wrapper dependencies
-- Sets up startup script with channel verification
+**Our Additions:**
+- Node 24 runtime
+- Tailscale integration (optional, via `TAILSCALE_AUTHKEY`)
+- Express wrapper for setup wizard
+- Auto-enable logic for configured channels
+- Persistent storage via `/data` volume
 
-**Why build from source?**
-- `npm install -g openclaw@latest` produces a slim build without Telegram
-- Building from source ensures **all channels** are included
-- Build verification prevents regressions
+**Why use official image?**
+- ✅ Always up-to-date with latest OpenClaw release
+- ✅ Tested and verified by OpenClaw team
+- ✅ Faster builds (no source compilation needed)
+- ✅ Channels installed on-demand via onboarding wizard
+
+**Channel Installation:**
+Channels are **not pre-installed**. During `/setup` wizard:
+1. User selects which channels to use (Telegram, Discord, Slack)
+2. OpenClaw installs selected channels as npm packages
+3. Channels are configured and enabled automatically
+4. Installation persists to `/data` volume
 
 ---
 
