@@ -109,6 +109,63 @@ function isConfigured() {
   }
 }
 
+// ========== PENDING CHANNELS HELPERS ==========
+function pendingChannelsPath() {
+  return path.join(STATE_DIR, ".pending-channels.json");
+}
+
+function savePendingChannel(name, cfgObj) {
+  try {
+    const pendingPath = pendingChannelsPath();
+    let pending = {};
+
+    // Read existing pending channels
+    if (fs.existsSync(pendingPath)) {
+      const existing = fs.readFileSync(pendingPath, "utf8");
+      pending = JSON.parse(existing);
+    }
+
+    // Add/update this channel
+    pending[name] = cfgObj;
+
+    // Write back
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(pendingPath, JSON.stringify(pending, null, 2), "utf8");
+
+    console.log(`[channels] Saved pending config for ${name}`);
+    return true;
+  } catch (err) {
+    console.warn(`[channels] Failed to save pending ${name}: ${err.message}`);
+    return false;
+  }
+}
+
+function readPendingChannels() {
+  try {
+    const pendingPath = pendingChannelsPath();
+    if (!fs.existsSync(pendingPath)) return null;
+
+    const content = fs.readFileSync(pendingPath, "utf8");
+    return JSON.parse(content);
+  } catch (err) {
+    console.warn(`[channels] Failed to read pending channels: ${err.message}`);
+    return null;
+  }
+}
+
+function clearPendingChannels() {
+  try {
+    const pendingPath = pendingChannelsPath();
+    if (fs.existsSync(pendingPath)) {
+      fs.unlinkSync(pendingPath);
+      console.log("[channels] Cleared pending channels file");
+    }
+  } catch (err) {
+    console.warn(`[channels] Failed to clear pending channels: ${err.message}`);
+  }
+}
+// =========================================
+
 let gatewayProc = null;
 let gatewayStarting = null;
 
@@ -206,17 +263,67 @@ async function autoEnableChannelsWithTokens() {
       clawArgs(["config", "get", "channels"]),
     );
 
-    if (configResult.code !== 0) {
-      console.log("[channels] No channels config found, skipping auto-enable");
-      return;
+    let channels = {};
+    if (configResult.code === 0) {
+      try {
+        channels = JSON.parse(configResult.output);
+      } catch {
+        console.warn("[channels] Could not parse channels config");
+      }
+    } else {
+      console.log("[channels] No existing channels config found");
     }
 
-    let channels;
-    try {
-      channels = JSON.parse(configResult.output);
-    } catch {
-      console.warn("[channels] Could not parse channels config, skipping auto-enable");
-      return;
+    // Check for pending channels
+    const pending = readPendingChannels();
+    if (pending && Object.keys(pending).length > 0) {
+      console.log(`[channels] Found pending channel configs: ${Object.keys(pending).join(", ")}`);
+
+      // Get fresh help text to check which plugins are now available
+      const channelsHelp = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["channels", "add", "--help"]),
+      );
+      const helpText = channelsHelp.output || "";
+
+      // Try to apply pending channels
+      for (const [channelName, channelConfig] of Object.entries(pending)) {
+        if (!helpText.includes(channelName)) {
+          console.log(`[channels] ${channelName} plugin still not available, will retry later`);
+          continue;
+        }
+
+        console.log(`[channels] Applying pending config for ${channelName}...`);
+        const result = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "config",
+            "set",
+            "--json",
+            `channels.${channelName}`,
+            JSON.stringify(channelConfig),
+          ]),
+        );
+
+        if (result.code === 0) {
+          console.log(`[channels] ✓ ${channelName} configured from pending file`);
+          // Update our in-memory channels object
+          channels[channelName] = channelConfig;
+        } else {
+          console.warn(`[channels] ✗ Failed to apply pending ${channelName}: ${result.output}`);
+        }
+      }
+
+      // Clear pending file if all channels were successfully applied
+      const allApplied = Object.keys(pending).every(name =>
+        channels[name] !== undefined
+      );
+
+      if (allApplied) {
+        clearPendingChannels();
+      } else {
+        console.log("[channels] Some pending channels not yet applied, keeping pending file");
+      }
     }
 
     // Auto-enable channels that have tokens but are disabled
@@ -699,11 +806,17 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       const helpText = channelsHelp.output || "";
 
       async function configureChannel(name, cfgObj) {
+        // First, always save to pending file as backup
+        savePendingChannel(name, cfgObj);
+
         if (!helpText.includes(name)) {
-          return `\n[${name}] ℹ️  Plugin not yet installed (channels are installed during onboarding).\n` +
-                 `   Token will be saved to config. Channel will be configured after plugin installation.\n` +
-                 `   Note: This is normal - channels are on-demand plugins, not pre-installed.\n`;
+          return `\n[${name}] ℹ️  Plugin not yet detected in 'channels add --help'.\n` +
+                 `   Token saved to pending file (.pending-channels.json).\n` +
+                 `   Will be applied automatically after gateway starts.\n` +
+                 `   Note: Channels are on-demand plugins installed during onboarding.\n`;
         }
+
+        // Plugin detected - try to apply immediately
         const set = await runCmd(
           OPENCLAW_NODE,
           clawArgs([
@@ -726,8 +839,9 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         return (
           `\n[${name}] ${status} ${enabledStatus} (exit=${set.code})\n` +
           (success
-            ? `   Token saved. Next step: Approve pairing in your ${name} chat.\n`
-            : `   Error: ${set.output || "(no output)"}\n`) +
+            ? `   Token saved to OpenClaw config. Next: Approve pairing in ${name}.\n`
+            : `   Error saving to config: ${set.output || "(no output)"}\n` +
+              `   Token is saved to pending file and will be retried.\n`) +
           `   Verify: exit=${get.code} | ${get.output?.substring(0, 100) || "(no output)"}\n`
         );
       }
@@ -759,6 +873,44 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         });
       }
 
+      // After channel configuration, refresh and retry pending channels
+      extra += "\n[setup] Checking for pending channel configurations...\n";
+
+      const pending = readPendingChannels();
+      if (pending && Object.keys(pending).length > 0) {
+        // Get fresh help text - plugins should be installed now
+        const freshChannelsHelp = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs(["channels", "add", "--help"]),
+        );
+        const freshHelpText = freshChannelsHelp.output || "";
+
+        for (const [channelName, channelConfig] of Object.entries(pending)) {
+          if (!freshHelpText.includes(channelName)) {
+            extra += `[${channelName}] Plugin still not available after onboarding\n`;
+            continue;
+          }
+
+          extra += `[${channelName}] Applying pending configuration...\n`;
+          const result = await runCmd(
+            OPENCLAW_NODE,
+            clawArgs([
+              "config",
+              "set",
+              "--json",
+              `channels.${channelName}`,
+              JSON.stringify(channelConfig),
+            ]),
+          );
+
+          if (result.code === 0) {
+            extra += `[${channelName}] ✓ Token applied successfully\n`;
+          } else {
+            extra += `[${channelName}] ✗ Failed to apply: ${result.output}\n`;
+          }
+        }
+      }
+
       extra += "\n[setup] Starting gateway...\n";
       await restartGateway();
       extra += "[setup] Gateway started.\n";
@@ -782,6 +934,9 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
     OPENCLAW_NODE,
     clawArgs(["channels", "add", "--help"]),
   );
+
+  const pendingChannels = readPendingChannels();
+
   res.json({
     wrapper: {
       node: process.version,
@@ -793,6 +948,9 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       gatewayTokenPersisted: fs.existsSync(
         path.join(STATE_DIR, "gateway.token"),
       ),
+      pendingChannelsPath: pendingChannelsPath(),
+      hasPendingChannels: pendingChannels !== null,
+      pendingChannels: pendingChannels ? Object.keys(pendingChannels) : [],
       railwayCommit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
     },
     openclaw: {
@@ -800,6 +958,8 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       node: OPENCLAW_NODE,
       version: v.output.trim(),
       channelsAddHelpIncludesTelegram: help.output.includes("telegram"),
+      channelsAddHelpIncludesDiscord: help.output.includes("discord"),
+      channelsAddHelpIncludesSlack: help.output.includes("slack"),
     },
   });
 });
