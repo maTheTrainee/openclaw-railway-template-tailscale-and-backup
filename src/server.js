@@ -914,6 +914,19 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       extra += "\n[setup] Starting gateway...\n";
       await restartGateway();
       extra += "[setup] Gateway started.\n";
+
+      // Run doctor to enable configured channels (e.g., Telegram)
+      extra += "\n[setup] Running doctor to enable channels...\n";
+      const doctorResult = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["doctor", "--fix", "--non-interactive"])
+      );
+      extra += `[doctor] exit=${doctorResult.code}\n`;
+      if (doctorResult.code === 0) {
+        extra += "[doctor] ✓ Channels enabled successfully\n";
+      } else {
+        extra += `[doctor] ⚠ Warning: ${doctorResult.output}\n`;
+      }
     }
 
     return res.status(ok ? 200 : 500).json({

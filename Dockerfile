@@ -19,7 +19,7 @@ RUN apt-get update && \
 # Install Tailscale
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 
-# Install OpenClaw globally via npm
+# Install OpenClaw globally via npm (includes Telegram support)
 RUN npm install -g openclaw@latest
 
 # Setup wrapper application
