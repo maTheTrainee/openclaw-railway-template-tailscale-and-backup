@@ -93,6 +93,35 @@ else
   echo "[tailscale] Tailscale disabled (set TAILSCALE_AUTHKEY to enable)"
 fi
 
+# ========== VERIFY OPENCLAW CHANNELS ==========
+echo "[openclaw] Verifying available channels..."
+echo "[openclaw] OpenClaw version: $(openclaw --version 2>/dev/null || echo 'unknown')"
+echo ""
+echo "[openclaw] Available channels:"
+openclaw channels add --help 2>/dev/null | grep -E '^\s+(telegram|discord|slack)' || echo "  (unable to list channels - may indicate build issue)"
+echo ""
+
+# Verify critical channels
+if openclaw channels add --help 2>/dev/null | grep -qi telegram; then
+  echo "[openclaw] ✓ Telegram channel available"
+else
+  echo "[openclaw] ✗ WARNING: Telegram channel NOT available in this build"
+fi
+
+if openclaw channels add --help 2>/dev/null | grep -qi discord; then
+  echo "[openclaw] ✓ Discord channel available"
+else
+  echo "[openclaw] ✗ WARNING: Discord channel NOT available in this build"
+fi
+
+if openclaw channels add --help 2>/dev/null | grep -qi slack; then
+  echo "[openclaw] ✓ Slack channel available"
+else
+  echo "[openclaw] ✗ WARNING: Slack channel NOT available in this build"
+fi
+
+echo ""
+
 # ========== START OPENCLAW ==========
 echo "[openclaw] Starting OpenClaw wrapper on port ${PORT:-8080}..."
 echo "[openclaw] STATE_DIR=${OPENCLAW_STATE_DIR:-/data/.openclaw}"

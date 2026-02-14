@@ -336,20 +336,31 @@ Expected output:
 
 **Cause:** OpenClaw was installed without Telegram channel support.
 
-**Fix:** This template uses `npm install -g openclaw@latest` which should include all channels. If Telegram is missing:
+**Fix:** This template builds OpenClaw from source to ensure all channels are included.
 
-1. Check OpenClaw installation in Dockerfile:
+1. **Verify at build-time:**
+   The Dockerfile includes a verification step that fails the build if Telegram is missing:
    ```dockerfile
-   RUN npm install -g openclaw@latest
+   RUN openclaw channels add --help | grep -i telegram || exit 1
    ```
 
-2. Verify Telegram support:
+2. **Verify at runtime:**
+   Check container startup logs:
+   ```
+   [openclaw] Verifying available channels...
+   [openclaw] ✓ Telegram channel available
+   [openclaw] ✓ Discord channel available
+   [openclaw] ✓ Slack channel available
+   ```
+
+3. **Manual verification via web terminal:**
    ```bash
-   # Via web terminal
    openclaw channels add --help | grep telegram
    ```
 
-3. If Telegram is still missing, OpenClaw may require a rebuild with Telegram support enabled. Check [OpenClaw documentation](https://github.com/openclaw/openclaw) for build instructions.
+If Telegram is missing, the Docker build should have failed. This indicates either:
+- OpenClaw source changed (report issue to OpenClaw repo)
+- Build cache issue (rebuild with `--no-cache`)
 
 ---
 
@@ -566,16 +577,39 @@ A: This should NOT happen if `/data` volume is properly mounted. Check:
 
 ```
 .
-├── Dockerfile              # Node 24 + Tailscale + OpenClaw
-├── entrypoint.sh           # Startup script (root)
+├── Dockerfile              # Multi-stage build (OpenClaw from source + Tailscale)
+├── entrypoint.sh           # Startup script (root) with channel verification
 ├── railway.json            # Railway template metadata
 ├── railway.toml            # Railway build config
 ├── src/
-│   ├── server.js           # Express wrapper + proxy
+│   ├── server.js           # Express wrapper + proxy + auto-enable
 │   └── public/             # Setup wizard static files
 ├── DEPLOYMENT_GUIDE.md     # Detailed deployment docs
+├── RAILWAY_TEMPLATE.md     # Publishing guide
 └── README.md               # This file
 ```
+
+### Build Process
+
+This template uses a **multi-stage Docker build** to ensure all channels (Telegram, Discord, Slack) are included:
+
+**Stage 1 - Builder:**
+- Clones OpenClaw from [official repository](https://github.com/openclaw/openclaw)
+- Checks out latest stable tag
+- Runs `pnpm install` and `pnpm build`
+- Produces full OpenClaw distribution with all channels
+
+**Stage 2 - Runtime:**
+- Node 24 + Tailscale installation
+- Copies built OpenClaw from builder stage
+- **Build-time verification:** Fails if Telegram channel missing
+- Installs wrapper dependencies
+- Sets up startup script with channel verification
+
+**Why build from source?**
+- `npm install -g openclaw@latest` produces a slim build without Telegram
+- Building from source ensures **all channels** are included
+- Build verification prevents regressions
 
 ---
 
