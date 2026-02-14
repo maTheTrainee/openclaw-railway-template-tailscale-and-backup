@@ -15,6 +15,10 @@ ln -sfn /data/.linuxbrew /home/linuxbrew/.linuxbrew
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
   echo "[tailscale] Starting Tailscale daemon..."
 
+  # Mask auth key for logging (show first 12 chars only)
+  MASKED_KEY="${TAILSCALE_AUTHKEY:0:12}...${TAILSCALE_AUTHKEY: -4}"
+  echo "[tailscale] Using auth key: $MASKED_KEY"
+
   # Create required directories
   mkdir -p /var/run/tailscale
   mkdir -p /data/tailscale
@@ -52,29 +56,38 @@ if [ -n "$TAILSCALE_AUTHKEY" ]; then
 
   # Authenticate with Tailscale
   echo "[tailscale] Authenticating with Tailscale..."
+
+  # Use environment variables with defaults
+  ACCEPT_DNS="${TAILSCALE_ACCEPT_DNS:-false}"
+  HOSTNAME="${TAILSCALE_HOSTNAME:-openclaw-railway}"
+
   tailscale up \
     --authkey="${TAILSCALE_AUTHKEY}" \
-    --hostname="${TAILSCALE_HOSTNAME:-openclaw-railway}" \
-    --accept-dns=false
+    --hostname="${HOSTNAME}" \
+    --accept-dns="${ACCEPT_DNS}"
 
   echo "[tailscale] ✓ Connected to tailnet"
   tailscale status || true
 
   # Optional: Tailscale Serve (HTTPS reverse proxy)
   if [ "$ENABLE_TAILSCALE_SERVE" = "true" ]; then
-    echo "[tailscale] Enabling Tailscale Serve (HTTPS 443 → http://127.0.0.1:${PORT:-8080})..."
+    HTTPS_PORT="${TAILSCALE_SERVE_HTTPS_PORT:-443}"
+    TARGET_PORT="${PORT:-8080}"
+
+    echo "[tailscale] Enabling Tailscale Serve (HTTPS ${HTTPS_PORT} → http://127.0.0.1:${TARGET_PORT})..."
 
     # Wait a bit for tailscale to fully stabilize
     sleep 2
 
-    tailscale serve --bg --https=443 http://127.0.0.1:${PORT:-8080}
+    tailscale serve --bg --https="${HTTPS_PORT}" "http://127.0.0.1:${TARGET_PORT}"
 
     echo "[tailscale] Serve status:"
     tailscale serve status || true
-    echo "[tailscale] ✓ Access via: https://${TAILSCALE_HOSTNAME:-openclaw-railway}.<YOUR-TAILNET>.ts.net"
+    echo "[tailscale] ✓ Access via: https://${HOSTNAME}.<YOUR-TAILNET>.ts.net"
   else
     echo "[tailscale] Tailscale Serve disabled (set ENABLE_TAILSCALE_SERVE=true to enable HTTPS)"
     echo "[tailscale] ✓ Tailnet-only access enabled"
+    echo "[tailscale] Access via: http://${HOSTNAME}.<YOUR-TAILNET>.ts.net:${PORT:-8080}"
   fi
 else
   echo "[tailscale] Tailscale disabled (set TAILSCALE_AUTHKEY to enable)"

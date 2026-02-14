@@ -1,118 +1,425 @@
-# OpenClaw Railway Template (1‑click deploy)
+# OpenClaw Railway Template + Tailscale (1‑click deploy)
 
-This repo packages **OpenClaw** for Railway with a small **/setup** web wizard so users can deploy and onboard **without running any commands**.
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/openclaw-tailscale)
+
+This repo packages **OpenClaw** for Railway with **Tailscale integration** and a web-based **/setup** wizard for zero-config deployment.
 
 ## What you get
 
 - **OpenClaw Gateway + Control UI** (served at `/` and `/openclaw`)
-- A friendly **Setup Wizard** at `/setup` (protected by a password)
-- Optional **Web Terminal** at `/tui` for browser-based TUI access
-- Persistent state via **Railway Volume** (so config/credentials/memory survive redeploys)
+- **Tailscale Integration** (secure, private access via your tailnet)
+- **Setup Wizard** at `/setup` (password-protected, no CLI needed)
+- **Optional Web Terminal** at `/tui` for browser-based TUI access
+- **Persistent State** via Railway Volume (config/credentials survive redeploys)
 
-## How it works (high level)
+---
 
-- The container runs a wrapper web server.
-- The wrapper protects `/setup` with `SETUP_PASSWORD`.
-- During setup, the wrapper runs `openclaw onboard --non-interactive ...` inside the container, writes state to the volume, and then starts the gateway.
-- After setup, **`/` is OpenClaw**. The wrapper reverse-proxies all traffic (including WebSockets) to the local gateway process.
+## 🚀 Quick Start
 
-## Getting chat tokens (so you don't have to scramble)
+### 1-Click Deploy
 
-### Telegram bot token
+1. Click the **Deploy on Railway** button above
+2. Railway will prompt you to set **SETUP_PASSWORD** (auto-generated)
+3. **Optional:** Add **TAILSCALE_AUTHKEY** for private tailnet access
+4. Deploy completes in ~2 minutes
 
-1. Open Telegram and message **@BotFather**
-2. Run `/newbot` and follow the prompts
-3. BotFather will give you a token that looks like: `123456789:AA...`
-4. Paste that token into `/setup`
+### First-Time Setup
 
-### Discord bot token
+1. **Via Railway Public URL** (if Tailscale not configured):
+   - Visit `https://<your-project>.up.railway.app/setup`
+   - Enter the `SETUP_PASSWORD` from Railway Variables
+   - Complete OpenClaw onboarding (choose AI provider, configure channels)
 
-1. Go to the Discord Developer Portal: https://discord.com/developers/applications
-2. **New Application** → pick a name
-3. Open the **Bot** tab → **Add Bot**
-4. Copy the **Bot Token** and paste it into `/setup`
-5. Invite the bot to your server (OAuth2 URL Generator → scopes: `bot`, `applications.commands`; then choose permissions)
+2. **Via Tailscale** (if `TAILSCALE_AUTHKEY` set):
+   - Visit `http://<TAILSCALE_HOSTNAME>.<your-tailnet>.ts.net:8080/setup`
+   - Or with HTTPS: `https://<TAILSCALE_HOSTNAME>.<your-tailnet>.ts.net/setup` (if `ENABLE_TAILSCALE_SERVE=true`)
 
-## Web Terminal (TUI)
+---
 
-The template includes an optional web-based terminal that runs `openclaw tui` in your browser.
+## 🔐 Tailscale Integration
 
-### Enabling
+### Why Tailscale?
 
-Set `ENABLE_WEB_TUI=true` in your Railway Variables. The terminal is **disabled by default**.
+- **Private Access**: Expose OpenClaw only to your tailnet (no public internet access)
+- **Zero Config VPN**: Access from any device in your tailnet (phone, laptop, server)
+- **MagicDNS**: Use friendly hostnames instead of IPs
+- **Optional HTTPS**: Built-in HTTPS reverse proxy via `tailscale serve`
 
-Once enabled, access it at `/tui` or via the "Open Terminal" button on the setup page.
+### Setup Instructions
 
-### Security
+#### Step 1: Get a Tailscale Auth Key
 
-The web TUI implements multiple security layers:
+1. Go to [Tailscale Admin Console → Settings → Keys](https://login.tailscale.com/admin/settings/keys)
+2. Click **Generate auth key**
+3. Configure key:
+   - ✅ **Reusable** (recommended for Railway rebuilds)
+   - ✅ **Ephemeral** (optional - auto-cleanup on disconnect)
+   - ✅ **Tags** (e.g., `tag:railway` for ACL rules)
+4. Copy the key (starts with `tskey-auth-...`)
 
-| Control | Description |
-|---------|-------------|
-| **Opt-in only** | Disabled by default, requires explicit `ENABLE_WEB_TUI=true` |
-| **Password protected** | Uses the same `SETUP_PASSWORD` as the setup wizard |
-| **Single session** | Only 1 concurrent TUI session allowed at a time |
-| **Idle timeout** | Auto-closes after 5 minutes of inactivity (configurable via `TUI_IDLE_TIMEOUT_MS`) |
-| **Max duration** | Hard limit of 30 minutes per session (configurable via `TUI_MAX_SESSION_MS`) |
+#### Step 2: Add to Railway
 
-### Configuration
+In your Railway project **Variables** section, add:
+
+```env
+TAILSCALE_AUTHKEY=tskey-auth-xxxxxxxxxxxxxxxxxxxxx
+```
+
+**Optional variables:**
+
+```env
+TAILSCALE_HOSTNAME=openclaw-prod                # Custom hostname (default: openclaw-railway)
+ENABLE_TAILSCALE_SERVE=true                     # Enable HTTPS reverse proxy (default: false)
+TAILSCALE_SERVE_HTTPS_PORT=443                  # HTTPS port (default: 443)
+TAILSCALE_ACCEPT_DNS=false                      # Accept Tailscale DNS (default: false)
+```
+
+#### Step 3: Deploy & Access
+
+After deployment, check Railway logs for:
+
+```
+[tailscale] ✓ Connected to tailnet
+[tailscale] ✓ Access via: https://openclaw-prod.<your-tailnet>.ts.net
+```
+
+**Access methods:**
+
+| Mode | URL | Notes |
+|------|-----|-------|
+| **Tailnet-only** (default) | `http://<hostname>.<tailnet>.ts.net:8080` | No HTTPS, tailnet-only |
+| **With HTTPS** (`ENABLE_TAILSCALE_SERVE=true`) | `https://<hostname>.<tailnet>.ts.net` | HTTPS reverse proxy enabled |
+
+### Disable Public Access (Recommended)
+
+To make OpenClaw **tailnet-only**:
+
+1. Go to Railway **Settings** → **Networking**
+2. Toggle **Public Networking** to **OFF**
+3. OpenClaw will only be accessible via Tailscale
+
+---
+
+## 🔧 Environment Variables
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SETUP_PASSWORD` | Protects `/setup` wizard | Auto-generated by Railway |
+
+### OpenClaw Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENABLE_WEB_TUI` | `false` | Set to `true` to enable |
-| `TUI_IDLE_TIMEOUT_MS` | `300000` (5 min) | Closes session after inactivity |
-| `TUI_MAX_SESSION_MS` | `1800000` (30 min) | Maximum session duration |
+| `OPENCLAW_STATE_DIR` | `/data/.openclaw` | Config directory |
+| `OPENCLAW_WORKSPACE_DIR` | `/data/workspace` | Agent workspace |
+| `PORT` | `8080` | HTTP port (auto-set by Railway) |
 
-## Local testing
+### Tailscale Configuration
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TAILSCALE_AUTHKEY` | _(none)_ | No* | Tailscale auth key ([get here](https://login.tailscale.com/admin/settings/keys)) |
+| `TAILSCALE_HOSTNAME` | `openclaw-railway` | No | Tailscale hostname |
+| `ENABLE_TAILSCALE_SERVE` | `false` | No | Enable HTTPS reverse proxy (443 → 8080) |
+| `TAILSCALE_SERVE_HTTPS_PORT` | `443` | No | HTTPS port for serve |
+| `TAILSCALE_ACCEPT_DNS` | `false` | No | Accept Tailscale DNS settings |
+
+*_If `TAILSCALE_AUTHKEY` is not set, Tailscale is disabled and OpenClaw runs normally._
+
+### Web Terminal (TUI)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_WEB_TUI` | `false` | Enable web terminal at `/tui` |
+| `TUI_IDLE_TIMEOUT_MS` | `300000` (5 min) | Idle timeout |
+| `TUI_MAX_SESSION_MS` | `1800000` (30 min) | Max session duration |
+
+---
+
+## 📖 How It Works
+
+### Architecture
+
+```
+┌─────────────────────────────────────────┐
+│ Railway Container                       │
+│                                         │
+│  ┌──────────────────────────────────┐   │
+│  │ entrypoint.sh (root)             │   │
+│  │ 1. Setup persistent storage      │   │
+│  │ 2. [Optional] Start Tailscale    │   │
+│  │    - Start tailscaled daemon     │   │
+│  │    - Wait for socket (max 30s)   │   │
+│  │    - Run tailscale up            │   │
+│  │    - [Optional] tailscale serve  │   │
+│  │ 3. Start OpenClaw wrapper        │   │
+│  └──────────────┬───────────────────┘   │
+│                 │                       │
+│                 ▼                       │
+│  ┌──────────────────────────────────┐   │
+│  │ OpenClaw Wrapper (Express)       │   │
+│  │ - /setup wizard                  │   │
+│  │ - /tui web terminal              │   │
+│  │ - Proxy to gateway               │   │
+│  └──────────────┬───────────────────┘   │
+│                 │                       │
+│                 ▼                       │
+│  ┌──────────────────────────────────┐   │
+│  │ OpenClaw Gateway                 │   │
+│  │ (localhost:18789)                │   │
+│  └──────────────────────────────────┘   │
+│                                         │
+└─────────────────────────────────────────┘
+         │                     │
+         ▼                     ▼
+   Public URL          Tailscale Network
+(Railway domain)      (private tailnet)
+```
+
+### Request Flow
+
+1. **User → Railway Public URL** → Wrapper → Gateway
+2. **User → Tailscale** → [Optional: serve HTTPS] → Wrapper → Gateway
+
+### Startup Sequence
+
+```
+1. Setup persistent storage (/data volume)
+   └─> Persist linuxbrew
+
+2. [If TAILSCALE_AUTHKEY set]
+   ├─> Create /var/run/tailscale directory
+   ├─> Start tailscaled daemon (userspace networking)
+   ├─> Wait for socket (/var/run/tailscale/tailscaled.sock) - MAX 30s
+   ├─> Run `tailscale up --authkey=...`
+   ├─> [If ENABLE_TAILSCALE_SERVE=true]
+   │   └─> Run `tailscale serve --https=443 http://127.0.0.1:8080`
+   └─> Print Tailscale status
+
+3. Start OpenClaw wrapper (node src/server.js)
+   └─> Binds to 0.0.0.0:$PORT
+```
+
+---
+
+## 🛠️ Local Testing
+
+### With Docker
 
 ```bash
-docker build -t openclaw-railway-template .
+docker build -t openclaw-tailscale .
 
 docker run --rm -p 8080:8080 \
   -e PORT=8080 \
   -e SETUP_PASSWORD=test \
-  -e ENABLE_WEB_TUI=true \
+  -e TAILSCALE_AUTHKEY=tskey-auth-xxxxx \
+  -e ENABLE_TAILSCALE_SERVE=false \
   -e OPENCLAW_STATE_DIR=/data/.openclaw \
   -e OPENCLAW_WORKSPACE_DIR=/data/workspace \
   -v $(pwd)/.tmpdata:/data \
-  openclaw-railway-template
+  openclaw-tailscale
 
-# Setup wizard: http://localhost:8080/setup (password: test)
-# Web terminal: http://localhost:8080/tui (after setup)
+# Access: http://localhost:8080/setup (password: test)
 ```
 
-## FAQ
+### Without Tailscale
+
+Omit `TAILSCALE_AUTHKEY` to disable Tailscale:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e PORT=8080 \
+  -e SETUP_PASSWORD=test \
+  -e OPENCLAW_STATE_DIR=/data/.openclaw \
+  -e OPENCLAW_WORKSPACE_DIR=/data/workspace \
+  -v $(pwd)/.tmpdata:/data \
+  openclaw-tailscale
+```
+
+---
+
+## 🔍 Troubleshooting
+
+### "Failed to connect to local Tailscale daemon"
+
+**Cause:** `tailscale serve` ran before daemon was ready
+
+**Fix:** The `entrypoint.sh` now waits up to 30s for socket. Check logs for:
+```
+[tailscale] Waiting for socket... (Xs)
+[tailscale] ✓ Socket ready: /var/run/tailscaled.sock
+```
+
+If timeout occurs, check Railway logs for `tailscaled` errors.
+
+### "Cannot access via Tailscale URL"
+
+**If using HTTPS (`ENABLE_TAILSCALE_SERVE=true`):**
+- Wait 60s after first deploy (Tailscale cert provisioning)
+- Check logs for `[tailscale] Serve status`
+- Verify you're logged into the same tailnet
+
+**If using direct access (no SERVE):**
+- Find IP from logs: `tailscale status` output
+- Access: `http://<IP>:8080/setup`
+
+### "OpenClaw not starting"
+
+**Check:**
+1. `SETUP_PASSWORD` is set
+2. `/data` volume is mounted (check Railway dashboard)
+3. Logs show `[openclaw] Starting OpenClaw wrapper on port 8080...`
+
+### Userspace Networking Warnings
+
+```
+Warning: userspace networking mode is experimental
+```
+
+**This is normal.** Tailscale uses userspace networking in containers without `CAP_NET_ADMIN` (Railway default).
+
+### Check Tailscale Status
+
+Access the web terminal (`/tui` if `ENABLE_WEB_TUI=true`) and run:
+
+```bash
+tailscale status
+tailscale serve status  # If ENABLE_TAILSCALE_SERVE=true
+```
+
+---
+
+## 📚 Getting Chat Tokens
+
+### Telegram Bot Token
+
+1. Open Telegram and message **@BotFather**
+2. Run `/newbot` and follow the prompts
+3. BotFather will give you a token like: `123456789:AA...`
+4. Paste into `/setup` wizard
+
+### Discord Bot Token
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. **New Application** → pick a name
+3. Open **Bot** tab → **Add Bot**
+4. Copy **Bot Token** and paste into `/setup`
+5. **Enable MESSAGE CONTENT INTENT** (required for OpenClaw)
+6. Invite bot via OAuth2 URL Generator (scopes: `bot`, `applications.commands`)
+
+---
+
+## 🌐 Web Terminal (TUI)
+
+The template includes an optional web-based terminal for `openclaw tui`.
+
+### Enabling
+
+Set `ENABLE_WEB_TUI=true` in Railway Variables. Access at `/tui`.
+
+### Security
+
+| Control | Description |
+|---------|-------------|
+| **Opt-in only** | Disabled by default |
+| **Password protected** | Uses same `SETUP_PASSWORD` as setup wizard |
+| **Single session** | Only 1 concurrent session allowed |
+| **Idle timeout** | Auto-closes after 5 minutes of inactivity |
+| **Max duration** | Hard limit of 30 minutes per session |
+
+---
+
+## 📋 FAQ
 
 **Q: How do I access the setup page?**
 
-A: Go to `/setup` on your deployed instance. When prompted for credentials, use the generated `SETUP_PASSWORD` from your Railway Variables as the password. The username field is ignored—you can leave it empty or enter anything.
+A: Go to `/setup` on your deployed instance. Use `SETUP_PASSWORD` from Railway Variables.
 
-**Q: I see "gateway disconnected" or authentication errors in the Control UI. What should I do?**
+**Q: Can I disable public access and use Tailscale only?**
 
-A: Go back to `/setup` and click the "Open OpenClaw UI" button from there. The setup page passes the required auth token to the UI. Accessing the UI directly without the token will cause connection errors.
+A: Yes! Set `TAILSCALE_AUTHKEY` in Railway Variables, then disable **Public Networking** in Railway Settings → Networking.
 
-**Q: I don't see the TUI option on the setup page.**
+**Q: Do I need HTTPS reverse proxy (`ENABLE_TAILSCALE_SERVE`)?**
 
-A: Make sure `ENABLE_WEB_TUI=true` is set in your Railway Variables and redeploy. The web terminal is disabled by default.
+A: No. By default, Tailscale just adds your container to your tailnet. Use `ENABLE_TAILSCALE_SERVE=true` only if you want Tailscale to provide HTTPS (port 443) to the service.
 
-**Q: How do I approve pairing for Telegram or Discord?**
+**Q: I see "gateway disconnected" in the Control UI.**
 
-A: Go to `/setup` and use the "Approve Pairing" dialog to approve pending pairing requests from your chat channels.
+A: Access the UI via `/setup` → "Open OpenClaw UI" button. The setup page injects the required auth token.
 
 **Q: How do I change the AI model after setup?**
 
-A: Use the OpenClaw CLI to switch models. Access the web terminal at `/tui` (if enabled) or SSH into your container and run:
-
+A: Use the web terminal (`/tui`) or OpenClaw CLI:
 ```bash
-openclaw models set provider/model-id
+openclaw models set anthropic/claude-sonnet-4-20250514
+openclaw models list --all  # See available models
 ```
 
-For example: `openclaw models set anthropic/claude-sonnet-4-20250514` or `openclaw models set openai/gpt-4-turbo`. Use `openclaw models list --all` to see available models.
+**Q: My config seems broken. How do I fix it?**
 
-**Q: My config seems broken or I'm getting strange errors. How do I fix it?**
+A: Go to `/setup` → "Run Doctor" button. This runs `openclaw doctor --repair`.
 
-A: Go to `/setup` and click the "Run Doctor" button. This runs `openclaw doctor --repair` which performs health checks on your gateway and channels, creates a backup of your config, and removes any unrecognized or corrupted configuration keys.
+**Q: How do I get my Tailscale hostname?**
 
-## Support
+A: Check Railway logs after deployment:
+```
+[tailscale] ✓ Access via: https://openclaw-railway.<your-tailnet>.ts.net
+```
 
-Need help? [Request support on Railway Station](https://station.railway.com/all-templates/d0880c01-2cc5-462c-8b76-d84c1a203348)
+Or run `tailscale status` in the web terminal.
+
+---
+
+## 📦 Files & Structure
+
+```
+.
+├── Dockerfile              # Node 24 + Tailscale + OpenClaw
+├── entrypoint.sh           # Startup script (root)
+├── railway.json            # Railway template metadata
+├── railway.toml            # Railway build config
+├── src/
+│   ├── server.js           # Express wrapper + proxy
+│   └── public/             # Setup wizard static files
+├── DEPLOYMENT_GUIDE.md     # Detailed deployment docs
+└── README.md               # This file
+```
+
+---
+
+## 🔒 Security Notes
+
+1. **Secrets Masking**: Auth keys are never logged in plaintext
+2. **DNS Control**: `accept-dns=false` by default (prevents Tailscale DNS hijacking)
+3. **Serve Disabled**: `ENABLE_TAILSCALE_SERVE=false` by default (opt-in for HTTPS)
+4. **Setup Password**: Auto-generated 32-char secret by Railway
+5. **Web TUI**: Disabled by default, requires explicit opt-in
+
+---
+
+## 📖 Documentation
+
+- **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** - Comprehensive deployment reference
+- **[CHANGELOG_TAILSCALE_FIX.md](./CHANGELOG_TAILSCALE_FIX.md)** - Tailscale fix changelog
+- **[CLAUDE.md](./CLAUDE.md)** - Project architecture and coding guidelines
+
+---
+
+## 🆘 Support
+
+- **Railway Template Issues**: [GitHub Issues](https://github.com/maTheTrainee/openclaw-railway-template-tailscale-and-backup/issues)
+- **OpenClaw Docs**: [OpenClaw Documentation](https://github.com/openclaw/openclaw)
+- **Tailscale Docs**: [Tailscale Knowledge Base](https://tailscale.com/kb/)
+- **Railway Help**: [Railway Discord](https://discord.gg/railway)
+
+---
+
+## 📝 License
+
+This template is provided as-is for deploying OpenClaw on Railway. See OpenClaw's license for details.
+
+---
+
+**Built with ❤️ for the Railway + Tailscale + OpenClaw community**

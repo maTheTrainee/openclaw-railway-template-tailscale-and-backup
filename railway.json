@@ -1,0 +1,83 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/setup/healthz",
+    "healthcheckTimeout": 300,
+    "startCommand": "./entrypoint.sh"
+  },
+  "volumes": [
+    {
+      "name": "data",
+      "mountPath": "/data"
+    }
+  ],
+  "services": [
+    {
+      "name": "openclaw-tailscale",
+      "icon": "https://raw.githubusercontent.com/tailscale/tailscale/main/docs/static/images/logo.svg"
+    }
+  ],
+  "environments": {
+    "production": {
+      "variables": {
+        "PORT": "8080",
+        "SETUP_PASSWORD": {
+          "description": "Password to protect /setup wizard",
+          "required": true,
+          "generator": {
+            "type": "secret",
+            "length": 32
+          }
+        },
+        "OPENCLAW_STATE_DIR": {
+          "description": "OpenClaw configuration directory",
+          "default": "/data/.openclaw"
+        },
+        "OPENCLAW_WORKSPACE_DIR": {
+          "description": "OpenClaw workspace directory",
+          "default": "/data/workspace"
+        },
+        "TAILSCALE_AUTHKEY": {
+          "description": "Tailscale authentication key (get from https://login.tailscale.com/admin/settings/keys)",
+          "required": false,
+          "isSecret": true
+        },
+        "TAILSCALE_HOSTNAME": {
+          "description": "Tailscale hostname (default: openclaw-railway)",
+          "default": "openclaw-railway"
+        },
+        "ENABLE_TAILSCALE_SERVE": {
+          "description": "Enable Tailscale HTTPS reverse proxy (443 → 8080)",
+          "default": "false"
+        },
+        "TAILSCALE_SERVE_HTTPS_PORT": {
+          "description": "Tailscale HTTPS port for serve (default: 443)",
+          "default": "443"
+        },
+        "TAILSCALE_ACCEPT_DNS": {
+          "description": "Accept Tailscale DNS settings (default: false)",
+          "default": "false"
+        },
+        "ENABLE_WEB_TUI": {
+          "description": "Enable web-based terminal at /tui (default: false)",
+          "default": "false"
+        },
+        "TUI_IDLE_TIMEOUT_MS": {
+          "description": "Web TUI idle timeout in milliseconds (default: 300000 = 5 min)",
+          "default": "300000"
+        },
+        "TUI_MAX_SESSION_MS": {
+          "description": "Web TUI maximum session duration in milliseconds (default: 1800000 = 30 min)",
+          "default": "1800000"
+        }
+      }
+    }
+  }
+}
