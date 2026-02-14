@@ -10,6 +10,9 @@ RUN apt-get update \
     python3 \
     build-essential \
   && rm -rf /var/lib/apt/lists/*
+  
+# Install Tailscale
+RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 RUN npm install -g openclaw@latest
 
