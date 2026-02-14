@@ -12,7 +12,7 @@ import { WebSocketServer } from "ws";
 // ========== BACKUP DEPENDENCIES ==========
 import archiver from "archiver";
 import multer from "multer";
-import tar from "tar";
+import * as tar from "tar";
 // =========================================
 
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
