@@ -33,11 +33,17 @@ if [ "$ENABLE_TAILSCALE" = "true" ] && [ -n "$TS_AUTHKEY" ]; then
   tailscale up \
     --authkey="${TS_AUTHKEY}" \
     --hostname="${TS_HOSTNAME:-openclaw}" \
-    --advertise-tags="${TS_EXTRA_ARGS:-tag:railway}" \
+    --advertise-tags="${TS_TAGS:-tag:railway}" \
     --accept-routes
   
   echo "[tailscale] Setting up Tailscale Serve..."
-  tailscale serve --bg --https=443 http://127.0.0.1:8080
+  tailscale serve --bg http://127.0.0.1:8080
+
+  echo "[tailscale] Serve status:"
+tailscale serve status || true
+
+echo "[tailscale] Status:"
+tailscale status || true
   
   echo "[tailscale] ✓ Tailscale enabled"
   echo "[tailscale] Access via: https://${TS_HOSTNAME:-openclaw}.<YOUR-TAILNET>.ts.net"
