@@ -9,6 +9,12 @@ import httpProxy from "http-proxy";
 import pty from "node-pty";
 import { WebSocketServer } from "ws";
 
+// ========== BACKUP DEPENDENCIES ==========
+import archiver from "archiver";
+import multer from "multer";
+import tar from "tar";
+// =========================================
+
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const STATE_DIR =
   process.env.OPENCLAW_STATE_DIR?.trim() ||
@@ -747,6 +753,7 @@ app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
 });
 
 app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
+  
   const args = ["doctor", "--non-interactive", "--repair"];
   const result = await runCmd(OPENCLAW_NODE, clawArgs(args));
   return res.status(result.code === 0 ? 200 : 500).json({
@@ -754,6 +761,135 @@ app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
     output: result.output,
   });
 });
+
+// ========== BACKUP ENDPOINTS ==========
+
+// Export backup (download)
+app.get("/setup/export", requireSetupAuth, async (req, res) => {
+  try {
+    const archive = archiver("tar", {
+      gzip: true,
+      gzipOptions: { level: 9 }
+    });
+
+    const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    res.attachment(`openclaw-backup-${timestamp}.tar.gz`);
+    
+    archive.on("error", (err) => {
+      console.error("[export] Archive error:", err);
+      res.status(500).send("Backup export failed");
+    });
+
+    archive.pipe(res);
+
+    // Add directories to archive
+    console.log("[export] Creating backup archive...");
+    archive.directory(STATE_DIR, ".openclaw");
+    archive.directory(WORKSPACE_DIR, "workspace");
+
+    await archive.finalize();
+    console.log("[export] ✓ Backup download complete");
+  } catch (error) {
+    console.error("[export] Export failed:", error);
+    res.status(500).send(`Export failed: ${error.message}`);
+  }
+});
+
+// Import backup (upload)
+const upload = multer({ 
+  dest: "/tmp/openclaw-uploads/",
+  limits: { fileSize: 500 * 1024 * 1024 } // 500MB max
+});
+
+app.post("/setup/import", requireSetupAuth, upload.single("backup"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: "No backup file uploaded" 
+      });
+    }
+
+    const backupPath = req.file.path;
+    const extractPath = "/tmp/openclaw-restore";
+
+    console.log("[import] Extracting backup from:", backupPath);
+    
+    // Create temp directory
+    if (fs.existsSync(extractPath)) {
+      fs.rmSync(extractPath, { recursive: true, force: true });
+    }
+    fs.mkdirSync(extractPath, { recursive: true });
+    
+    // Extract backup
+    await tar.x({
+      file: backupPath,
+      cwd: extractPath
+    });
+
+    console.log("[import] Backup extracted to:", extractPath);
+
+    // Backup current config (safety)
+    const backupDate = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+    const safetyBackupDir = path.join("/data", `.openclaw.backup-${backupDate}`);
+    
+    if (fs.existsSync(STATE_DIR)) {
+      fs.cpSync(STATE_DIR, safetyBackupDir, { recursive: true });
+      console.log("[import] Current config backed up to:", safetyBackupDir);
+    }
+    
+    // Restore from backup
+    let restored = false;
+    
+    if (fs.existsSync(path.join(extractPath, ".openclaw"))) {
+      fs.cpSync(path.join(extractPath, ".openclaw"), STATE_DIR, { 
+        recursive: true,
+        force: true 
+      });
+      console.log("[import] ✓ Config restored");
+      restored = true;
+    }
+    
+    if (fs.existsSync(path.join(extractPath, "workspace"))) {
+      fs.cpSync(path.join(extractPath, "workspace"), WORKSPACE_DIR, { 
+        recursive: true,
+        force: true 
+      });
+      console.log("[import] ✓ Workspace restored");
+      restored = true;
+    }
+
+    // Cleanup
+    fs.rmSync(backupPath, { force: true });
+    fs.rmSync(extractPath, { recursive: true, force: true });
+
+    if (!restored) {
+      return res.status(400).json({
+        ok: false,
+        error: "No valid backup data found in archive"
+      });
+    }
+
+    console.log("[import] ✓ Import complete - restarting gateway");
+    
+    // Restart gateway to apply changes
+    await restartGateway();
+    
+    res.json({ 
+      ok: true, 
+      message: "Backup imported successfully. Gateway restarted." 
+    });
+    
+  } catch (error) {
+    console.error("[import] Import failed:", error);
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// ========== END BACKUP ENDPOINTS ==========
 
 app.get("/tui", requireSetupAuth, (_req, res) => {
   if (!ENABLE_WEB_TUI) {
