@@ -18,8 +18,13 @@ if [ "$ENABLE_TAILSCALE" = "true" ] && [ -n "$TS_AUTHKEY" ]; then
   mkdir -p /data/tailscale
   chown openclaw:openclaw /data/tailscale
   
-  # Start tailscaled in background (as root)
-  tailscaled --state=/data/tailscale/state --socket=/var/run/tailscale/tailscaled.sock &
+ # Start tailscaled in userspace mode (no TUN device needed)
+  tailscaled \
+    --state=/data/tailscale/state \
+    --socket=/var/run/tailscale/tailscaled.sock \
+    --tun=userspace-networking \
+    --socks5-server=localhost:1055 \
+    --outbound-http-proxy-listen=localhost:1055 &
   
   # Wait for tailscaled to be ready
   sleep 3
