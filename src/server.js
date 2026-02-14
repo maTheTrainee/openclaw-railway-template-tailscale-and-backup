@@ -799,6 +799,63 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
       }
 
+      // Install channels using official 'channels add' command
+      extra += "\n[setup] Installing channels...\n";
+
+      if (payload.telegramToken?.trim()) {
+        extra += "[telegram] Installing channel via official command...\n";
+        const telegramInstall = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "channels",
+            "add",
+            "--channel",
+            "telegram",
+            "--token",
+            payload.telegramToken.trim(),
+          ]),
+        );
+        extra += `[telegram] install exit=${telegramInstall.code}\n`;
+        if (telegramInstall.output?.trim()) {
+          extra += `[telegram] ${telegramInstall.output}\n`;
+        }
+      }
+
+      if (payload.discordToken?.trim()) {
+        extra += "[discord] Installing channel via official command...\n";
+        const discordInstall = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "channels",
+            "add",
+            "--channel",
+            "discord",
+            "--token",
+            payload.discordToken.trim(),
+          ]),
+        );
+        extra += `[discord] install exit=${discordInstall.code}\n`;
+        if (discordInstall.output?.trim()) {
+          extra += `[discord] ${discordInstall.output}\n`;
+        }
+      }
+
+      if (payload.slackBotToken?.trim() || payload.slackAppToken?.trim()) {
+        extra += "[slack] Installing channel via official command...\n";
+        const slackArgs = ["channels", "add", "--channel", "slack"];
+        if (payload.slackBotToken?.trim()) {
+          slackArgs.push("--bot-token", payload.slackBotToken.trim());
+        }
+        if (payload.slackAppToken?.trim()) {
+          slackArgs.push("--app-token", payload.slackAppToken.trim());
+        }
+        const slackInstall = await runCmd(OPENCLAW_NODE, clawArgs(slackArgs));
+        extra += `[slack] install exit=${slackInstall.code}\n`;
+        if (slackInstall.output?.trim()) {
+          extra += `[slack] ${slackInstall.output}\n`;
+        }
+      }
+
       const channelsHelp = await runCmd(
         OPENCLAW_NODE,
         clawArgs(["channels", "add", "--help"]),
