@@ -7,7 +7,7 @@ FROM ghcr.io/openclaw/openclaw:2026.2.9 AS openclaw
 # ============================================================
 # Runtime image with Tailscale + OpenClaw
 # ============================================================
-FROM node:24-bookworm
+FROM node:22-bookworm
 
 # Install runtime dependencies
 RUN apt-get update && \
