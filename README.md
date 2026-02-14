@@ -289,25 +289,162 @@ tailscale status
 tailscale serve status  # If ENABLE_TAILSCALE_SERVE=true
 ```
 
+### "Telegram channel not working"
+
+**Symptom:** Bot doesn't respond to messages
+
+**Possible causes:**
+
+1. **Channel not enabled:**
+   - Check Railway logs for: `[telegram] ✓ ENABLED`
+   - If you see `[telegram] ❌ SKIPPED`, OpenClaw was built without Telegram support
+
+2. **Pairing not approved:**
+   - Message your bot in Telegram
+   - Go to `/setup` → **Approve Pairing**
+   - Select your Telegram user/chat and approve
+
+3. **Token not saved:**
+   - Check `/data/.openclaw/openclaw.json` exists (via web terminal or Railway logs)
+   - Verify `channels.telegram.botToken` is present in config
+
+4. **Gateway not restarted after setup:**
+   - Check logs for: `[setup] Gateway started.`
+   - If missing, go to `/setup` → **Run Doctor** to restart gateway
+
+**Fix:**
+```bash
+# Via web terminal (/tui)
+openclaw config get channels.telegram  # Verify config exists
+openclaw channels list                 # Check if telegram is enabled
+```
+
+Expected output:
+```json
+{
+  "enabled": true,
+  "dmPolicy": "pairing",
+  "botToken": "1234567890:ABC...",
+  "groupPolicy": "allowlist",
+  "streamMode": "partial"
+}
+```
+
+### "This OpenClaw build does not include telegram support"
+
+**Symptom:** Setup logs show `[telegram] ❌ SKIPPED`
+
+**Cause:** OpenClaw was installed without Telegram channel support.
+
+**Fix:** This template uses `npm install -g openclaw@latest` which should include all channels. If Telegram is missing:
+
+1. Check OpenClaw installation in Dockerfile:
+   ```dockerfile
+   RUN npm install -g openclaw@latest
+   ```
+
+2. Verify Telegram support:
+   ```bash
+   # Via web terminal
+   openclaw channels add --help | grep telegram
+   ```
+
+3. If Telegram is still missing, OpenClaw may require a rebuild with Telegram support enabled. Check [OpenClaw documentation](https://github.com/openclaw/openclaw) for build instructions.
+
 ---
 
-## 📚 Getting Chat Tokens
+## 📚 Chat Integration Setup
 
-### Telegram Bot Token
+### Telegram Setup (Recommended)
 
-1. Open Telegram and message **@BotFather**
-2. Run `/newbot` and follow the prompts
-3. BotFather will give you a token like: `123456789:AA...`
-4. Paste into `/setup` wizard
+**Step 1: Create Bot**
+1. Open Telegram and message [@BotFather](https://t.me/botfather)
+2. Send `/newbot` command
+3. Follow prompts to choose name and username
+4. BotFather gives you a token like: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`
 
-### Discord Bot Token
+**Step 2: Configure in OpenClaw**
+1. Go to `/setup` wizard in your deployed instance
+2. During setup, paste the **Telegram Bot Token** in the Telegram field
+3. Click **Run Setup**
+4. Setup automatically:
+   - ✅ Saves token to config (`/data/.openclaw/openclaw.json`)
+   - ✅ **Enables Telegram channel automatically**
+   - ✅ Sets pairing policy to `pairing` (secure by default)
 
+**Step 3: Pair Your Chat**
+1. Open Telegram and message your bot
+2. Send any message (e.g., "hello")
+3. Go back to `/setup` → **Approve Pairing** button
+4. Select your Telegram user/chat and approve
+5. ✅ Done! You can now chat with OpenClaw via Telegram
+
+**Important Notes:**
+- ❌ **DO NOT** set `TELEGRAM_BOT_TOKEN` as a Railway environment variable
+- ✅ Token is stored securely in `/data/.openclaw/openclaw.json` (persisted via volume)
+- ✅ Channel is **auto-enabled** when token is provided during setup
+- ✅ If you redeploy, token persists (volume survives redeploys)
+
+---
+
+### Discord Setup
+
+**Step 1: Create Bot**
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. **New Application** → pick a name
 3. Open **Bot** tab → **Add Bot**
-4. Copy **Bot Token** and paste into `/setup`
-5. **Enable MESSAGE CONTENT INTENT** (required for OpenClaw)
-6. Invite bot via OAuth2 URL Generator (scopes: `bot`, `applications.commands`)
+4. Copy **Bot Token**
+
+**Step 2: Enable Required Intents**
+⚠️ **CRITICAL**: Enable **MESSAGE CONTENT INTENT** in Bot settings
+   - Discord Developer Portal → Your App → Bot → Privileged Gateway Intents
+   - Toggle **MESSAGE CONTENT INTENT** to ON
+
+**Step 3: Invite Bot to Server**
+1. OAuth2 → URL Generator
+2. Select scopes: `bot`, `applications.commands`
+3. Select permissions: `Send Messages`, `Read Messages`, `Read Message History`
+4. Copy generated URL and open in browser to invite bot
+
+**Step 4: Configure in OpenClaw**
+1. Go to `/setup` wizard
+2. Paste **Discord Bot Token** in Discord field
+3. Click **Run Setup**
+4. Setup automatically enables Discord channel
+
+**Step 5: Pair Your Server**
+1. In Discord, send a message mentioning your bot
+2. Go to `/setup` → **Approve Pairing**
+3. Approve your Discord server
+
+---
+
+### Slack Setup
+
+**Step 1: Create Slack App**
+1. Go to [Slack API](https://api.slack.com/apps)
+2. **Create New App** → From scratch
+3. Configure OAuth scopes (Bot Token Scopes):
+   - `chat:write`
+   - `channels:history`
+   - `groups:history`
+   - `im:history`
+   - `mpim:history`
+
+**Step 2: Get Tokens**
+1. **Bot Token**: OAuth & Permissions → Bot User OAuth Token (`xoxb-...`)
+2. **App Token**: Basic Information → App-Level Tokens (`xapp-...`)
+
+**Step 3: Configure in OpenClaw**
+1. Go to `/setup` wizard
+2. Paste **Slack Bot Token** and **App Token**
+3. Click **Run Setup**
+4. Setup automatically enables Slack channel
+
+**Step 4: Pair Your Workspace**
+1. In Slack, invite bot to a channel: `/invite @yourbotname`
+2. Send a message mentioning the bot
+3. Go to `/setup` → **Approve Pairing**
 
 ---
 
@@ -369,6 +506,59 @@ A: Check Railway logs after deployment:
 ```
 
 Or run `tailscale status` in the web terminal.
+
+**Q: How does Telegram channel auto-enable work?**
+
+A: When you paste your Telegram bot token in the `/setup` wizard:
+1. Setup saves token to `/data/.openclaw/openclaw.json`
+2. Setup **automatically sets** `enabled: true` for the Telegram channel
+3. Gateway restarts and loads the enabled channel
+4. **You only need to approve pairing** - no manual channel enabling needed
+
+If you redeploy or restart, the template automatically re-enables any channel that has a token but is disabled.
+
+**Q: Do I need to set TELEGRAM_BOT_TOKEN as an environment variable?**
+
+A: **No!** ❌ Do NOT set bot tokens as Railway environment variables. Instead:
+1. Paste token in `/setup` wizard during setup
+2. Token is saved to config file on `/data` volume (persists across redeploys)
+3. Channel is auto-enabled when token is detected
+
+**Q: I pasted my Telegram token but the channel isn't working. What's wrong?**
+
+A: Check the following:
+1. **Is Telegram supported in this OpenClaw build?**
+   - Check setup logs for: `[telegram] ✓ ENABLED` (success) or `[telegram] ❌ SKIPPED` (not supported)
+   - If skipped, OpenClaw was built without Telegram support
+
+2. **Did you approve pairing?**
+   - Go to `/setup` → **Approve Pairing** button
+   - Message your bot in Telegram first, then approve
+
+3. **Check Railway logs:**
+   ```
+   [channels] Auto-enabling channels with tokens: telegram
+   [channels] ✓ telegram auto-enabled. Next: approve pairing in telegram.
+   ```
+
+**Q: Can I use the same Telegram bot token across multiple deployments?**
+
+A: **No!** Each Telegram bot can only run one instance at a time. If you deploy to multiple Railway projects:
+1. Create a separate bot via @BotFather for each deployment
+2. Each bot gets its own unique token
+3. Use different tokens in each deployment's setup wizard
+
+**Q: My Telegram channel was working but stopped after redeploy. Why?**
+
+A: This should NOT happen if `/data` volume is properly mounted. Check:
+1. Railway dashboard → Your service → **Volumes** tab
+2. Verify `/data` volume exists and is mounted
+3. Check Railway logs for:
+   ```
+   [channels] Checking for configured channels to auto-enable...
+   [channels] All configured channels are already enabled
+   ```
+4. If volume was deleted, you'll need to run setup again
 
 ---
 

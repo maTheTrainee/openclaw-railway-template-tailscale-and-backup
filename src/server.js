@@ -196,6 +196,73 @@ async function startGateway() {
   });
 }
 
+async function autoEnableChannelsWithTokens() {
+  try {
+    console.log("[channels] Checking for configured channels to auto-enable...");
+
+    // Read current config
+    const configResult = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs(["config", "get", "channels"]),
+    );
+
+    if (configResult.code !== 0) {
+      console.log("[channels] No channels config found, skipping auto-enable");
+      return;
+    }
+
+    let channels;
+    try {
+      channels = JSON.parse(configResult.output);
+    } catch {
+      console.warn("[channels] Could not parse channels config, skipping auto-enable");
+      return;
+    }
+
+    // Auto-enable channels that have tokens but are disabled
+    const toEnable = [];
+
+    if (channels.telegram?.botToken && !channels.telegram?.enabled) {
+      toEnable.push("telegram");
+    }
+    if (channels.discord?.token && !channels.discord?.enabled) {
+      toEnable.push("discord");
+    }
+    if ((channels.slack?.botToken || channels.slack?.appToken) && !channels.slack?.enabled) {
+      toEnable.push("slack");
+    }
+
+    if (toEnable.length === 0) {
+      console.log("[channels] All configured channels are already enabled");
+      return;
+    }
+
+    console.log(`[channels] Auto-enabling channels with tokens: ${toEnable.join(", ")}`);
+
+    for (const channel of toEnable) {
+      const updatedConfig = { ...channels[channel], enabled: true };
+      const result = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs([
+          "config",
+          "set",
+          "--json",
+          `channels.${channel}`,
+          JSON.stringify(updatedConfig),
+        ]),
+      );
+
+      if (result.code === 0) {
+        console.log(`[channels] ✓ ${channel} auto-enabled. Next: approve pairing in ${channel}.`);
+      } else {
+        console.warn(`[channels] ✗ Failed to auto-enable ${channel}: ${result.output}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[channels] Auto-enable error: ${err.message}`);
+  }
+}
+
 async function ensureGatewayRunning() {
   if (!isConfigured()) return { ok: false, reason: "not configured" };
   if (gatewayProc) return { ok: true };
@@ -206,6 +273,8 @@ async function ensureGatewayRunning() {
       if (!ready) {
         throw new Error("Gateway did not become ready in time");
       }
+      // Auto-enable channels with tokens after gateway is ready
+      await autoEnableChannelsWithTokens();
     })().finally(() => {
       gatewayStarting = null;
     });
@@ -631,7 +700,9 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
       async function configureChannel(name, cfgObj) {
         if (!helpText.includes(name)) {
-          return `\n[${name}] skipped (this openclaw build does not list ${name} in \`channels add --help\`)\n`;
+          return `\n[${name}] ❌ SKIPPED: This OpenClaw build does not include ${name} support.\n` +
+                 `   To enable ${name}, ensure OpenClaw was built with ${name} channel support.\n` +
+                 `   Check: openclaw channels add --help\n`;
         }
         const set = await runCmd(
           OPENCLAW_NODE,
@@ -647,9 +718,17 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           OPENCLAW_NODE,
           clawArgs(["config", "get", `channels.${name}`]),
         );
+
+        const success = set.code === 0;
+        const status = success ? "✓" : "✗";
+        const enabledStatus = cfgObj.enabled ? "ENABLED" : "DISABLED";
+
         return (
-          `\n[${name} config] exit=${set.code} (output ${set.output.length} chars)\n${set.output || "(no output)"}` +
-          `\n[${name} verify] exit=${get.code} (output ${get.output.length} chars)\n${get.output || "(no output)"}`
+          `\n[${name}] ${status} ${enabledStatus} (exit=${set.code})\n` +
+          (success
+            ? `   Token saved. Next step: Approve pairing in your ${name} chat.\n`
+            : `   Error: ${set.output || "(no output)"}\n`) +
+          `   Verify: exit=${get.code} | ${get.output?.substring(0, 100) || "(no output)"}\n`
         );
       }
 
