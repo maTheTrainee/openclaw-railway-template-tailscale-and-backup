@@ -964,6 +964,14 @@ app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
 // Export backup (download)
 app.get("/setup/export", requireSetupAuth, async (req, res) => {
   try {
+    // Validate there's something to back up
+    const hasState = fs.existsSync(STATE_DIR);
+    const hasWorkspace = fs.existsSync(WORKSPACE_DIR);
+
+    if (!hasState && !hasWorkspace) {
+      return res.status(404).send("Nothing to back up — no state or workspace directories found.");
+    }
+
     const archive = archiver("tar", {
       gzip: true,
       gzipOptions: { level: 9 }
@@ -971,24 +979,34 @@ app.get("/setup/export", requireSetupAuth, async (req, res) => {
 
     const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     res.attachment(`openclaw-backup-${timestamp}.tar.gz`);
-    
-    archive.on("error", (err) => {
-      console.error("[export] Archive error:", err);
-      res.status(500).send("Backup export failed");
+
+    // Wait for the archive to fully stream to the response
+    const streamDone = new Promise((resolve, reject) => {
+      res.on("finish", resolve);
+      res.on("error", reject);
+      archive.on("error", reject);
     });
 
     archive.pipe(res);
 
-    // Add directories to archive
     console.log("[export] Creating backup archive...");
-    archive.directory(STATE_DIR, ".openclaw");
-    archive.directory(WORKSPACE_DIR, "workspace");
+    if (hasState) {
+      console.log("[export] Adding STATE_DIR:", STATE_DIR);
+      archive.directory(STATE_DIR, ".openclaw");
+    }
+    if (hasWorkspace) {
+      console.log("[export] Adding WORKSPACE_DIR:", WORKSPACE_DIR);
+      archive.directory(WORKSPACE_DIR, "workspace");
+    }
 
-    await archive.finalize();
+    archive.finalize();
+    await streamDone;
     console.log("[export] ✓ Backup download complete");
   } catch (error) {
     console.error("[export] Export failed:", error);
-    res.status(500).send(`Export failed: ${error.message}`);
+    if (!res.headersSent) {
+      res.status(500).send(`Export failed: ${error.message}`);
+    }
   }
 });
 
