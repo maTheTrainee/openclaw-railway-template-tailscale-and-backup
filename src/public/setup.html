@@ -32,7 +32,7 @@
       discordToken: '',
       slackBotToken: '',
       slackAppToken: '',
-      model: '',
+      model: 'glm-4.7',
       log: '',
       loading: false,
       exportingBackup: false, // Added backup   
@@ -75,7 +75,7 @@
             this.updateAuthChoices();
           }
           if (j.channelsAddHelp && j.channelsAddHelp.indexOf('telegram') === -1) {
-            this.log += '\nNote: this openclaw build does not list telegram in `channels add --help`. Telegram auto-add will be skipped.\n';
+            this.log += '\nNote: Channel plugins not yet installed. Tokens will be saved and applied after onboarding.\n';
           }
           this.isReady = true;
         } catch (e) {
@@ -287,8 +287,184 @@
         };
         
         input.click();
-      }
+      },
       // ========== END BACKUP FUNCTIONS ==========
+      
+      // ========== GATEWAY MANAGEMENT FUNCTIONS ==========
+      async showGatewayStatus() {
+        this.log = 'Checking gateway status...\n';
+        this.loading = true;
+        
+        try {
+          const response = await fetch('/setup/api/gateway/status', {
+            credentials: 'same-origin'
+          });
+          const data = await response.json();
+          
+          if (data.ok) {
+            this.log += '✓ Gateway Status:\n';
+            this.log += `  Running: ${data.status.running ? 'Yes' : 'No'}\n`;
+            this.log += `  Starting: ${data.status.starting ? 'Yes' : 'No'}\n`;
+            if (data.status.proc) {
+              this.log += `  PID: ${data.status.proc.pid}\n`;
+            }
+            this.log += `\nRecent Logs:\n${data.logs}\n`;
+          } else {
+            this.log += '✗ Failed: ' + data.error + '\n';
+          }
+        } catch (error) {
+          this.log += '✗ Error: ' + error.message + '\n';
+        } finally {
+          this.loading = false;
+        }
+      },
+      
+      async restartGateway() {
+        if (!confirm('Restart the gateway? A safety backup will be created first.')) return;
+        
+        this.log = 'Restarting gateway...\n';
+        this.loading = true;
+        
+        try {
+          const response = await fetch('/setup/api/gateway/restart', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' }
+          });
+          const data = await response.json();
+          
+          if (data.ok) {
+            this.log += '✓ ' + data.message + '\n';
+            if (data.ready) {
+              this.log += '✓ Gateway is ready\n';
+            } else {
+              this.log += '⚠ Gateway restarting, check status in a moment\n';
+            }
+          } else {
+            this.log += '✗ Failed: ' + data.error + '\n';
+          }
+        } catch (error) {
+          this.log += '✗ Error: ' + error.message + '\n';
+        } finally {
+          this.loading = false;
+        }
+      },
+      
+      async showLogs() {
+        this.log = 'Fetching gateway logs...\n';
+        this.loading = true;
+        
+        try {
+          const response = await fetch('/setup/api/logs/view?lines=100', {
+            credentials: 'same-origin'
+          });
+          const data = await response.json();
+          
+          if (data.ok) {
+            this.log = '=== Gateway Logs (last ' + data.lines + ' lines) ===\n\n';
+            this.log += data.logs + '\n';
+          } else {
+            this.log = '✗ Failed: ' + data.error + '\n';
+          }
+        } catch (error) {
+          this.log = '✗ Error: ' + error.message + '\n';
+        } finally {
+          this.loading = false;
+        }
+      },
+      // ========== END GATEWAY MANAGEMENT FUNCTIONS ==========
+      
+      // ========== FILE MANAGEMENT FUNCTIONS ==========
+      fileBrowserOpen: false,
+      fileBrowserPath: '',
+      fileBrowserFiles: [],
+      fileBrowserType: 'workspace',
+      
+      async openFilesModal() {
+        this.fileBrowserOpen = true;
+        this.fileBrowserType = 'workspace';
+        this.fileBrowserPath = '';
+        await this.browseFiles();
+      },
+      
+      closeFilesModal() {
+        this.fileBrowserOpen = false;
+      },
+      
+      async browseFiles() {
+        try {
+          const params = new URLSearchParams();
+          if (this.fileBrowserType === 'workspace') {
+            params.append('dir', 'workspace');
+          } else if (this.fileBrowserType === 'config') {
+            params.append('dir', 'config');
+          } else {
+            if (this.fileBrowserPath) {
+              params.append('dir', this.fileBrowserPath);
+            }
+          }
+          
+          const response = await fetch('/setup/api/files/browse?' + params.toString(), {
+            credentials: 'same-origin'
+          });
+          const data = await response.json();
+          
+          if (data.ok) {
+            this.fileBrowserFiles = data.files || [];
+            if (!this.fileBrowserPath && data.relativePath) {
+              this.fileBrowserPath = data.relativePath;
+            }
+          } else {
+            alert('Failed to browse files: ' + data.error);
+          }
+        } catch (error) {
+          alert('Error: ' + error.message);
+        }
+      },
+      
+      formatFileSize(bytes) {
+        if (bytes === null || bytes === undefined) return '';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      },
+      
+      formatDate(dateStr) {
+        const date = new Date(dateStr);
+        return date.toLocaleString();
+      },
+      
+      async downloadFile(file) {
+        try {
+          const params = new URLSearchParams();
+          params.append('file', file.path || file);
+          params.append('type', this.fileBrowserType === 'config' ? 'config' : 'workspace');
+          
+          const response = await fetch('/setup/api/files/download?' + params.toString(), {
+            credentials: 'same-origin'
+          });
+          
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Download failed');
+          }
+          
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = file.name;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          
+          this.log += '✓ Downloaded: ' + file.name + '\n';
+        } catch (error) {
+          alert('Download failed: ' + error.message);
+        }
+      },
+      // ========== END FILE MANAGEMENT FUNCTIONS ==========
     }));
   });
   </script>
@@ -402,6 +578,62 @@
           </div>
           
           <!-- ========== END BACKUP CARDS ========== -->
+
+<!-- ========== GATEWAY MANAGEMENT CARDS ========== -->
+          <div class="flex flex-col bg-indigo-50 dark:bg-indigo-900/20 rounded-xl p-4 border border-indigo-200 dark:border-indigo-800">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-indigo-500/20 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+              </div>
+              <span class="font-medium text-indigo-700 dark:text-indigo-300">Gateway Status</span>
+            </div>
+            <p class="text-sm text-indigo-600/80 dark:text-indigo-400/70 flex-1">Check gateway status, uptime, and recent logs.</p>
+            <button @click="showGatewayStatus()" :disabled="loading" class="w-full mt-4 bg-indigo-100 dark:bg-indigo-900/40 hover:bg-indigo-200 dark:hover:bg-indigo-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-indigo-700 dark:text-indigo-300 px-4 py-2.5 rounded-lg font-medium border border-indigo-300 dark:border-indigo-700 transition-colors">
+              Check Status
+            </button>
+          </div>
+
+          <div class="flex flex-col bg-orange-50 dark:bg-orange-900/20 rounded-xl p-4 border border-orange-200 dark:border-orange-800">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-orange-500/20 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              </div>
+              <span class="font-medium text-orange-700 dark:text-orange-300">Restart Gateway</span>
+            </div>
+            <p class="text-sm text-orange-600/80 dark:text-orange-400/70 flex-1">Safely restart gateway with automatic backup.</p>
+            <button @click="restartGateway()" :disabled="loading" class="w-full mt-4 bg-orange-100 dark:bg-orange-900/40 hover:bg-orange-200 dark:hover:bg-orange-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-orange-700 dark:text-orange-300 px-4 py-2.5 rounded-lg font-medium border border-orange-300 dark:border-orange-700 transition-colors">
+              Restart
+            </button>
+          </div>
+
+          <div class="flex flex-col bg-rose-50 dark:bg-rose-900/20 rounded-xl p-4 border border-rose-200 dark:border-rose-800">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-rose-500/20 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              </div>
+              <span class="font-medium text-rose-700 dark:text-rose-300">View Logs</span>
+            </div>
+            <p class="text-sm text-rose-600/80 dark:text-rose-400/70 flex-1">View gateway logs for debugging.</p>
+            <button @click="showLogs()" :disabled="loading" class="w-full mt-4 bg-rose-100 dark:bg-rose-900/40 hover:bg-rose-200 dark:hover:bg-rose-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-rose-700 dark:text-rose-300 px-4 py-2.5 rounded-lg font-medium border border-rose-300 dark:border-rose-700 transition-colors">
+              View Logs
+            </button>
+          </div>
+
+<!-- ========== FILE MANAGEMENT CARDS ========== -->
+          <div class="flex flex-col bg-cyan-50 dark:bg-cyan-900/20 rounded-xl p-4 border border-cyan-200 dark:border-cyan-800">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 bg-cyan-500/20 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-cyan-600 dark:text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
+              </div>
+              <span class="font-medium text-cyan-700 dark:text-cyan-300">Browse Files</span>
+            </div>
+            <p class="text-sm text-cyan-600/80 dark:text-cyan-400/70 flex-1">Browse and download files from workspace or config.</p>
+            <button @click="openFilesModal()" :disabled="loading" class="w-full mt-4 bg-cyan-100 dark:bg-cyan-900/40 hover:bg-cyan-200 dark:hover:bg-cyan-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-700 dark:text-cyan-300 px-4 py-2.5 rounded-lg font-medium border border-cyan-300 dark:border-cyan-700 transition-colors">
+              Browse Files
+            </button>
+          </div>
+
+<!-- ========== END FILE MANAGEMENT CARDS ========== -->
         </div>
 
         <div x-show="log" class="bg-neutral-100 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg p-4 font-mono text-xs text-neutral-600 dark:text-neutral-400 whitespace-pre-wrap max-h-64 overflow-y-auto" x-text="log"></div>
@@ -454,8 +686,13 @@
 
             <div>
               <label class="block text-xs uppercase tracking-wide text-neutral-500 font-medium mb-2">Model</label>
-              <input x-model="model" type="text" placeholder="e.g. openai/gpt-4.1, anthropic/claude-sonnet-4" class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" />
-              <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Format: provider/model-name</p>
+              <select x-model="model" class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-red-500 transition-colors">
+                <option value="glm-4.7" selected>GLM-4.7 (Default)</option>
+                <option value="glm-4.7-flash">GLM-4.7-Flash (Fallback)</option>
+                <option value="glm-4.6">GLM-4.6</option>
+                <option value="glm-4.5">GLM-4.5</option>
+              </select>
+              <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">GLM models optimized for coding tasks</p>
             </div>
 
             <div>
@@ -609,6 +846,49 @@
             <button @click="approvePairing()" class="flex-1 bg-red-600 hover:bg-red-700 text-white px-4 py-3 rounded-lg font-medium transition-colors">Approve</button>
             <button @click="showPairingModal = false" class="flex-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 px-4 py-3 rounded-lg font-medium border border-neutral-300 dark:border-neutral-700 transition-colors">Cancel</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div x-show="fileBrowserOpen" x-cloak class="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center z-50" @click.self="closeFilesModal()">
+      <div class="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-6 w-full max-w-4xl max-h-[80vh] mx-4 shadow-xl dark:shadow-none flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold">Browse Files</h3>
+          <div class="flex gap-2">
+            <button @click="fileBrowserType = 'workspace'; browseFiles();" :class="fileBrowserType === 'workspace' ? 'bg-cyan-600 text-white' : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300'" class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">Workspace</button>
+            <button @click="fileBrowserType = 'config'; browseFiles();" :class="fileBrowserType === 'config' ? 'bg-cyan-600 text-white' : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300'" class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">Config</button>
+          </div>
+        </div>
+        
+        <div class="flex-1 overflow-y-auto mb-4 bg-neutral-50 dark:bg-neutral-950 rounded-lg border border-neutral-200 dark:border-neutral-800">
+          <template x-if="fileBrowserFiles.length === 0">
+            <div class="p-8 text-center text-neutral-500">No files found</div>
+          </template>
+          <template x-for="file in fileBrowserFiles" :key="file.name">
+            <div class="flex items-center gap-3 px-4 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center" :class="file.type === 'directory' ? 'bg-amber-100 dark:bg-amber-900/30' : 'bg-cyan-100 dark:bg-cyan-900/30'">
+                <svg x-show="file.type === 'directory'" class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                <svg x-show="file.type !== 'directory'" class="w-5 h-5 text-cyan-600 dark:text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="font-medium text-sm truncate" x-text="file.name"></div>
+                <div class="text-xs text-neutral-500">
+                  <span x-show="file.type !== 'directory'" x-text="formatFileSize(file.size)"></span>
+                  <span x-show="file.type !== 'directory' && file.modified" class="mx-1">•</span>
+                  <span x-show="file.modified" x-text="formatDate(file.modified)"></span>
+                </div>
+              </div>
+              <template x-if="file.type !== 'directory'">
+                <button @click="downloadFile(file)" class="p-2 text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/30 rounded-lg transition-colors">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                </button>
+              </template>
+            </div>
+          </template>
+        </div>
+        
+        <div class="flex justify-end gap-3 pt-2">
+          <button @click="closeFilesModal()" class="px-4 py-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium transition-colors">Close</button>
         </div>
       </div>
     </div>

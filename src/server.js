@@ -15,6 +15,93 @@ import multer from "multer";
 import * as tar from "tar";
 // =========================================
 
+// ========== HELPER FUNCTIONS ==========
+
+// Path traversal protection
+function safePath(baseDir, userPath) {
+  const resolved = path.resolve(baseDir, userPath);
+  if (!resolved.startsWith(path.resolve(baseDir))) {
+    throw new Error("Path traversal detected");
+  }
+  return resolved;
+}
+
+// Validate JSON config
+function validateConfigJSON(jsonStr) {
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return { valid: true, data: parsed };
+  } catch (err) {
+    return { valid: false, error: err.message };
+  }
+}
+
+// Create safety backup of config
+function createSafetyBackup() {
+  try {
+    const configPath = configPath();
+    if (!fs.existsSync(configPath)) return null;
+
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+    const backupDir = path.join(STATE_DIR, ".config-backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+
+    const backupPath = path.join(backupDir, `config-${timestamp}.json`);
+    fs.copyFileSync(configPath, backupPath);
+
+    console.log(`[config] Safety backup created: ${backupPath}`);
+    return backupPath;
+  } catch (err) {
+    console.warn(`[config] Backup failed: ${err.message}`);
+    return null;
+  }
+}
+
+// Get gateway logs (last N lines)
+async function getGatewayLogs(lines = 100) {
+  try {
+    const logPath = path.join(STATE_DIR, "gateway.log");
+    if (!fs.existsSync(logPath)) {
+      return { ok: true, logs: "No log file found" };
+    }
+
+    const content = fs.readFileSync(logPath, "utf8");
+    const logLines = content.split("\n");
+    const lastLines = logLines.slice(-lines).join("\n");
+
+    return { ok: true, logs: lastLines };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// Deep merge utility for config patching
+function deepMerge(target, source) {
+  const output = { ...target };
+
+  if (isObject(target) && isObject(source)) {
+    Object.keys(source).forEach(key => {
+      if (isObject(source[key])) {
+        if (!(key in target)) {
+          Object.assign(output, { [key]: source[key] });
+        } else {
+          output[key] = deepMerge(target[key], source[key]);
+        }
+      } else {
+        Object.assign(output, { [key]: source[key] });
+      }
+    });
+  }
+
+  return output;
+}
+
+function isObject(item) {
+  return item && typeof item === "object" && !Array.isArray(item);
+}
+
+// =========================================
+
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const STATE_DIR =
   process.env.OPENCLAW_STATE_DIR?.trim() ||
@@ -108,6 +195,63 @@ function isConfigured() {
     return false;
   }
 }
+
+// ========== PENDING CHANNELS HELPERS ==========
+function pendingChannelsPath() {
+  return path.join(STATE_DIR, ".pending-channels.json");
+}
+
+function savePendingChannel(name, cfgObj) {
+  try {
+    const pendingPath = pendingChannelsPath();
+    let pending = {};
+
+    // Read existing pending channels
+    if (fs.existsSync(pendingPath)) {
+      const existing = fs.readFileSync(pendingPath, "utf8");
+      pending = JSON.parse(existing);
+    }
+
+    // Add/update this channel
+    pending[name] = cfgObj;
+
+    // Write back
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(pendingPath, JSON.stringify(pending, null, 2), "utf8");
+
+    console.log(`[channels] Saved pending config for ${name}`);
+    return true;
+  } catch (err) {
+    console.warn(`[channels] Failed to save pending ${name}: ${err.message}`);
+    return false;
+  }
+}
+
+function readPendingChannels() {
+  try {
+    const pendingPath = pendingChannelsPath();
+    if (!fs.existsSync(pendingPath)) return null;
+
+    const content = fs.readFileSync(pendingPath, "utf8");
+    return JSON.parse(content);
+  } catch (err) {
+    console.warn(`[channels] Failed to read pending channels: ${err.message}`);
+    return null;
+  }
+}
+
+function clearPendingChannels() {
+  try {
+    const pendingPath = pendingChannelsPath();
+    if (fs.existsSync(pendingPath)) {
+      fs.unlinkSync(pendingPath);
+      console.log("[channels] Cleared pending channels file");
+    }
+  } catch (err) {
+    console.warn(`[channels] Failed to clear pending channels: ${err.message}`);
+  }
+}
+// =========================================
 
 let gatewayProc = null;
 let gatewayStarting = null;
@@ -206,17 +350,67 @@ async function autoEnableChannelsWithTokens() {
       clawArgs(["config", "get", "channels"]),
     );
 
-    if (configResult.code !== 0) {
-      console.log("[channels] No channels config found, skipping auto-enable");
-      return;
+    let channels = {};
+    if (configResult.code === 0) {
+      try {
+        channels = JSON.parse(configResult.output);
+      } catch {
+        console.warn("[channels] Could not parse channels config");
+      }
+    } else {
+      console.log("[channels] No existing channels config found");
     }
 
-    let channels;
-    try {
-      channels = JSON.parse(configResult.output);
-    } catch {
-      console.warn("[channels] Could not parse channels config, skipping auto-enable");
-      return;
+    // Check for pending channels
+    const pending = readPendingChannels();
+    if (pending && Object.keys(pending).length > 0) {
+      console.log(`[channels] Found pending channel configs: ${Object.keys(pending).join(", ")}`);
+
+      // Get fresh help text to check which plugins are now available
+      const channelsHelp = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["channels", "add", "--help"]),
+      );
+      const helpText = channelsHelp.output || "";
+
+      // Try to apply pending channels
+      for (const [channelName, channelConfig] of Object.entries(pending)) {
+        if (!helpText.includes(channelName)) {
+          console.log(`[channels] ${channelName} plugin still not available, will retry later`);
+          continue;
+        }
+
+        console.log(`[channels] Applying pending config for ${channelName}...`);
+        const result = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "config",
+            "set",
+            "--json",
+            `channels.${channelName}`,
+            JSON.stringify(channelConfig),
+          ]),
+        );
+
+        if (result.code === 0) {
+          console.log(`[channels] ✓ ${channelName} configured from pending file`);
+          // Update our in-memory channels object
+          channels[channelName] = channelConfig;
+        } else {
+          console.warn(`[channels] ✗ Failed to apply pending ${channelName}: ${result.output}`);
+        }
+      }
+
+      // Clear pending file if all channels were successfully applied
+      const allApplied = Object.keys(pending).every(name =>
+        channels[name] !== undefined
+      );
+
+      if (allApplied) {
+        clearPendingChannels();
+      } else {
+        console.log("[channels] Some pending channels not yet applied, keeping pending file");
+      }
     }
 
     // Auto-enable channels that have tokens but are disabled
@@ -692,76 +886,79 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
       }
 
-      const channelsHelp = await runCmd(
-        OPENCLAW_NODE,
-        clawArgs(["channels", "add", "--help"]),
-      );
-      const helpText = channelsHelp.output || "";
-
-      async function configureChannel(name, cfgObj) {
-        if (!helpText.includes(name)) {
-          return `\n[${name}] ℹ️  Plugin not yet installed (channels are installed during onboarding).\n` +
-                 `   Token will be saved to config. Channel will be configured after plugin installation.\n` +
-                 `   Note: This is normal - channels are on-demand plugins, not pre-installed.\n`;
-        }
-        const set = await runCmd(
-          OPENCLAW_NODE,
-          clawArgs([
-            "config",
-            "set",
-            "--json",
-            `channels.${name}`,
-            JSON.stringify(cfgObj),
-          ]),
-        );
-        const get = await runCmd(
-          OPENCLAW_NODE,
-          clawArgs(["config", "get", `channels.${name}`]),
-        );
-
-        const success = set.code === 0;
-        const status = success ? "✓" : "✗";
-        const enabledStatus = cfgObj.enabled ? "ENABLED" : "DISABLED";
-
-        return (
-          `\n[${name}] ${status} ${enabledStatus} (exit=${set.code})\n` +
-          (success
-            ? `   Token saved. Next step: Approve pairing in your ${name} chat.\n`
-            : `   Error: ${set.output || "(no output)"}\n`) +
-          `   Verify: exit=${get.code} | ${get.output?.substring(0, 100) || "(no output)"}\n`
-        );
-      }
+      // Install channels using official 'channels add' command
+      extra += "\n[setup] Installing channels...\n";
 
       if (payload.telegramToken?.trim()) {
-        extra += await configureChannel("telegram", {
-          enabled: true,
-          dmPolicy: "pairing",
-          botToken: payload.telegramToken.trim(),
-          groupPolicy: "allowlist",
-          streamMode: "partial",
-        });
+        extra += "[telegram] Installing channel via official command...\n";
+        const telegramInstall = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "channels",
+            "add",
+            "--channel",
+            "telegram",
+            "--token",
+            payload.telegramToken.trim(),
+          ]),
+        );
+        extra += `[telegram] install exit=${telegramInstall.code}\n`;
+        if (telegramInstall.output?.trim()) {
+          extra += `[telegram] ${telegramInstall.output}\n`;
+        }
       }
 
       if (payload.discordToken?.trim()) {
-        extra += await configureChannel("discord", {
-          enabled: true,
-          token: payload.discordToken.trim(),
-          groupPolicy: "allowlist",
-          dm: { policy: "pairing" },
-        });
+        extra += "[discord] Installing channel via official command...\n";
+        const discordInstall = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "channels",
+            "add",
+            "--channel",
+            "discord",
+            "--token",
+            payload.discordToken.trim(),
+          ]),
+        );
+        extra += `[discord] install exit=${discordInstall.code}\n`;
+        if (discordInstall.output?.trim()) {
+          extra += `[discord] ${discordInstall.output}\n`;
+        }
       }
 
       if (payload.slackBotToken?.trim() || payload.slackAppToken?.trim()) {
-        extra += await configureChannel("slack", {
-          enabled: true,
-          botToken: payload.slackBotToken?.trim() || undefined,
-          appToken: payload.slackAppToken?.trim() || undefined,
-        });
+        extra += "[slack] Installing channel via official command...\n";
+        const slackArgs = ["channels", "add", "--channel", "slack"];
+        if (payload.slackBotToken?.trim()) {
+          slackArgs.push("--bot-token", payload.slackBotToken.trim());
+        }
+        if (payload.slackAppToken?.trim()) {
+          slackArgs.push("--app-token", payload.slackAppToken.trim());
+        }
+        const slackInstall = await runCmd(OPENCLAW_NODE, clawArgs(slackArgs));
+        extra += `[slack] install exit=${slackInstall.code}\n`;
+        if (slackInstall.output?.trim()) {
+          extra += `[slack] ${slackInstall.output}\n`;
+        }
       }
 
       extra += "\n[setup] Starting gateway...\n";
       await restartGateway();
       extra += "[setup] Gateway started.\n";
+
+      // Run doctor to enable configured channels (e.g., Telegram)
+      extra += "\n[setup] Running doctor to enable channels...\n";
+      const doctorResult = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["doctor", "--fix", "--non-interactive"])
+      );
+      extra += `[doctor] exit=${doctorResult.code}\n`;
+      if (doctorResult.code === 0) {
+        extra += "[doctor] ✓ Channels enabled successfully\n";
+      } else {
+        extra += `[doctor] ⚠ Warning: ${doctorResult.output}\n`;
+      }
     }
 
     return res.status(ok ? 200 : 500).json({
@@ -782,6 +979,9 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
     OPENCLAW_NODE,
     clawArgs(["channels", "add", "--help"]),
   );
+
+  const pendingChannels = readPendingChannels();
+
   res.json({
     wrapper: {
       node: process.version,
@@ -793,6 +993,9 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       gatewayTokenPersisted: fs.existsSync(
         path.join(STATE_DIR, "gateway.token"),
       ),
+      pendingChannelsPath: pendingChannelsPath(),
+      hasPendingChannels: pendingChannels !== null,
+      pendingChannels: pendingChannels ? Object.keys(pendingChannels) : [],
       railwayCommit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
     },
     openclaw: {
@@ -800,6 +1003,8 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       node: OPENCLAW_NODE,
       version: v.output.trim(),
       channelsAddHelpIncludesTelegram: help.output.includes("telegram"),
+      channelsAddHelpIncludesDiscord: help.output.includes("discord"),
+      channelsAddHelpIncludesSlack: help.output.includes("slack"),
     },
   });
 });
@@ -853,24 +1058,76 @@ app.get("/setup/export", requireSetupAuth, async (req, res) => {
 
     const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     res.attachment(`openclaw-backup-${timestamp}.tar.gz`);
-    
+
     archive.on("error", (err) => {
       console.error("[export] Archive error:", err);
-      res.status(500).send("Backup export failed");
+      if (!res.headersSent) {
+        res.status(500).send("Backup export failed");
+      }
+    });
+
+    archive.on("warning", (err) => {
+      if (err.code === "ENOENT") {
+        console.warn("[export] File/directory not found:", err.message);
+      } else {
+        console.error("[export] Archive warning:", err);
+      }
+    });
+
+    archive.on("progress", (progress) => {
+      console.log(`[export] Progress: ${progress.entries.processed}/${progress.entries.total} entries, ${(progress.fs.totalBytes / 1024 / 1024).toFixed(2)} MB`);
+    });
+
+    archive.on("end", () => {
+      console.log(`[export] ✓ Archive complete: ${archive.pointer()} bytes`);
     });
 
     archive.pipe(res);
 
-    // Add directories to archive
+    // Verify directories exist before adding
     console.log("[export] Creating backup archive...");
-    archive.directory(STATE_DIR, ".openclaw");
-    archive.directory(WORKSPACE_DIR, "workspace");
+
+    let stateDirExists = false;
+    let workspaceDirExists = false;
+
+    try {
+      if (fs.existsSync(STATE_DIR)) {
+        const stateStats = fs.statSync(STATE_DIR);
+        if (stateStats.isDirectory()) {
+          archive.directory(STATE_DIR, ".openclaw");
+          stateDirExists = true;
+          console.log(`[export] ✓ Added .openclaw from ${STATE_DIR}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[export] Failed to add .openclaw: ${err.message}`);
+    }
+
+    try {
+      if (fs.existsSync(WORKSPACE_DIR)) {
+        const workspaceStats = fs.statSync(WORKSPACE_DIR);
+        if (workspaceStats.isDirectory()) {
+          archive.directory(WORKSPACE_DIR, "workspace");
+          workspaceDirExists = true;
+          console.log(`[export] ✓ Added workspace from ${WORKSPACE_DIR}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[export] Failed to add workspace: ${err.message}`);
+    }
+
+    if (!stateDirExists && !workspaceDirExists) {
+      console.warn("[export] ⚠ Warning: No directories found to backup");
+      archive.append("No data found in .openclaw or workspace directories", { name: "README.txt" });
+    }
 
     await archive.finalize();
-    console.log("[export] ✓ Backup download complete");
+    console.log("[export] ✓ Backup download initiated");
   } catch (error) {
     console.error("[export] Export failed:", error);
-    res.status(500).send(`Export failed: ${error.message}`);
+    if (!res.headersSent) {
+      res.status(500).send(`Export failed: ${error.message}`);
+    }
   }
 });
 
@@ -969,6 +1226,260 @@ app.post("/setup/import", requireSetupAuth, upload.single("backup"), async (req,
 });
 
 // ========== END BACKUP ENDPOINTS ==========
+
+// ========== GATEWAY MANAGEMENT ENDPOINTS ==========
+
+app.get("/setup/api/gateway/status", requireSetupAuth, async (_req, res) => {
+  try {
+    const status = {
+      running: gatewayProc !== null && gatewayStarting === null,
+      starting: gatewayStarting !== null,
+      proc: gatewayProc ? {
+        pid: gatewayProc.pid,
+        killed: gatewayProc.killed
+      } : null
+    };
+
+    const configExists = isConfigured();
+    const logs = await getGatewayLogs(20);
+
+    res.json({
+      ok: true,
+      status,
+      configExists,
+      logs: logs.ok ? logs.logs : logs.error
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/setup/api/gateway/restart", requireSetupAuth, async (_req, res) => {
+  try {
+    console.log("[gateway] Manual restart requested");
+
+    createSafetyBackup();
+
+    await restartGateway();
+
+    const ready = await waitForGatewayReady({ timeoutMs: 60_000 });
+
+    res.json({
+      ok: true,
+      message: ready ? "Gateway restarted successfully" : "Gateway restarted but may not be ready yet",
+      ready
+    });
+  } catch (err) {
+    console.error("[gateway] Restart failed:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/setup/api/logs/view", requireSetupAuth, async (req, res) => {
+  const lines = parseInt(req.query.lines || "100", 10);
+  const maxLines = 500;
+
+  if (lines > maxLines) {
+    return res.status(400).json({
+      ok: false,
+      error: `Too many lines requested. Maximum: ${maxLines}`
+    });
+  }
+
+  const result = await getGatewayLogs(lines);
+
+  if (result.ok) {
+    res.json({
+      ok: true,
+      logs: result.logs,
+      lines: lines
+    });
+  } else {
+    res.status(500).json({
+      ok: false,
+      error: result.error
+    });
+  }
+});
+
+app.post("/setup/api/config/patch", requireSetupAuth, async (req, res) => {
+  try {
+    const { patch, path: configPathOverride } = req.body || {};
+
+    if (!patch) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing 'patch' field in request body"
+      });
+    }
+
+    const validation = validateConfigJSON(patch);
+    if (!validation.valid) {
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid JSON: ${validation.error}`
+      });
+    }
+
+    const targetPath = configPathOverride ? safePath(STATE_DIR, configPathOverride) : configPath();
+
+    console.log(`[config] Patching config at: ${targetPath}`);
+
+    const backupPath = createSafetyBackup();
+    if (!backupPath) {
+      return res.status(500).json({
+        ok: false,
+        error: "Failed to create safety backup"
+      });
+    }
+
+    let currentConfig = {};
+    if (fs.existsSync(targetPath)) {
+      try {
+        currentConfig = JSON.parse(fs.readFileSync(targetPath, "utf8"));
+      } catch (err) {
+        return res.status(500).json({
+          ok: false,
+          error: `Failed to read current config: ${err.message}`
+        });
+      }
+    }
+
+    const patchedConfig = deepMerge(currentConfig, validation.data);
+
+    fs.writeFileSync(targetPath, JSON.stringify(patchedConfig, null, 2), "utf8");
+
+    console.log(`[config] ✓ Config patched successfully (backup: ${backupPath})`);
+
+    if (gatewayProc) {
+      console.log("[config] Restarting gateway to apply changes...");
+      await restartGateway();
+    }
+
+    res.json({
+      ok: true,
+      message: "Config patched successfully",
+      backup: backupPath,
+      config: patchedConfig
+    });
+  } catch (err) {
+    console.error("[config] Patch failed:", err);
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+// ========== END GATEWAY MANAGEMENT ENDPOINTS ==========
+
+// ========== FILE MANAGEMENT ENDPOINTS ==========
+
+app.get("/setup/api/files/browse", requireSetupAuth, async (req, res) => {
+  try {
+    const directory = req.query.dir || "";
+    const basePath = directory === "workspace" ? WORKSPACE_DIR :
+                    directory === "config" ? STATE_DIR :
+                    WORKSPACE_DIR;
+
+    const targetPath = safePath(basePath, directory === "workspace" || directory === "config" ? "" : directory);
+
+    if (!fs.existsSync(targetPath)) {
+      return res.json({
+        ok: true,
+        path: targetPath,
+        files: [],
+        exists: false
+      });
+    }
+
+    const items = fs.readdirSync(targetPath, { withFileTypes: true });
+    const files = [];
+
+    for (const item of items) {
+      try {
+        const itemPath = path.join(targetPath, item.name);
+        const stats = fs.statSync(itemPath);
+
+        files.push({
+          name: item.name,
+          type: item.isDirectory() ? "directory" : "file",
+          size: item.isDirectory() ? null : stats.size,
+          modified: stats.mtime.toISOString(),
+          path: path.relative(basePath, itemPath)
+        });
+      } catch (err) {
+        console.warn(`[files] Failed to read ${item.name}: ${err.message}`);
+      }
+    }
+
+    files.sort((a, b) => {
+      if (a.type === "directory" && b.type !== "directory") return -1;
+      if (a.type !== "directory" && b.type === "directory") return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    res.json({
+      ok: true,
+      path: targetPath,
+      relativePath: directory,
+      baseType: directory === "workspace" ? "workspace" : directory === "config" ? "config" : "workspace",
+      files,
+      exists: true
+    });
+  } catch (err) {
+    console.error("[files] Browse failed:", err);
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+app.get("/setup/api/files/download", requireSetupAuth, async (req, res) => {
+  try {
+    const { file, type } = req.query;
+
+    if (!file) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing 'file' parameter"
+      });
+    }
+
+    const basePath = type === "config" ? STATE_DIR : WORKSPACE_DIR;
+    const targetPath = safePath(basePath, file);
+
+    if (!fs.existsSync(targetPath)) {
+      return res.status(404).json({
+        ok: false,
+        error: "File not found"
+      });
+    }
+
+    const stats = fs.statSync(targetPath);
+
+    if (stats.isDirectory()) {
+      return res.status(400).json({
+        ok: false,
+        error: "Cannot download a directory. Use backup export instead."
+      });
+    }
+
+    const filename = path.basename(targetPath);
+    res.download(targetPath, filename);
+
+    console.log(`[files] ✓ Download: ${filename} (${stats.size} bytes)`);
+  } catch (err) {
+    console.error("[files] Download failed:", err);
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+// ========== END FILE MANAGEMENT ENDPOINTS ==========
 
 app.get("/tui", requireSetupAuth, (_req, res) => {
   if (!ENABLE_WEB_TUI) {
